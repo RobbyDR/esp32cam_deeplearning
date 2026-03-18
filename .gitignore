@@ -1,0 +1,11 @@
+# Ignore semua
+*
+
+# Allow root files
+!/*
+# Tapi jangan include folder selain results
+!*/ 
+
+# Allow results folder saja
+!results/
+!results/**
