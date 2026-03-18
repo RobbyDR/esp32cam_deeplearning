@@ -1,0 +1,22 @@
+
+===== BENCHMARK EVALUATION =====
+
+===== SYSTEM RELIABILITY =====
+Total Test        : 1000
+Successful        : 0
+Timeout (RTO)     : 0
+Parse Error       : 0
+ESP Restart       : 0
+Crash Count       : 0
+Watchdog Reset    : 0
+Success Rate      : 0.00%
+
+===== PERFORMANCE =====
+Avg Latency (ms)  : 3647.27
+Min Latency (ms)  : 3647
+Max Latency (ms)  : 3648
+Latency Std Dev   : 0.44
+FPS               : 0.27
+Peak Free RAM     : 225884
+
+No successful inference to evaluate

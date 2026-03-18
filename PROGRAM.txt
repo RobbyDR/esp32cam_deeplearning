@@ -1,0 +1,3411 @@
+
+1. SPLIT DATASET (1hama_program_1_split_dataset.ipynb)
+import shutil
+import random
+from collections import defaultdict
+import pandas as pd
+from google.colab import drive
+import os
+
+# 1) Mount Google Drive (akan minta otorisasi)
+drive.mount('/content/drive')
+
+
+# ==============================
+# KONFIGURASI PATH
+# ==============================
+
+# 2) Cek apakah folder sumber ada (ganti path jika berbeda)
+SOURCE_DIR = "/content/drive/MyDrive/dataset/pests"   # Folder hasil Program 0
+print("Exists?", os.path.exists(SOURCE_DIR))
+if os.path.exists(SOURCE_DIR):
+    print("Isi folder:", sorted(os.listdir(SOURCE_DIR))[:20])
+else:
+    print("Folder tidak ditemukan. Pastikan path ZIP diextract ke:", SOURCE_DIR)
+
+TARGET_DIR = "/content/drive/MyDrive/dataset/pests_split"
+
+SPLIT_RATIO = {
+    "train": 0.70,
+    "valid": 0.15,
+    "test":  0.15
+}
+
+# Pastikan random stabil
+random.seed(42)
+
+# ==============================
+# 1. BACA DATASET SUMBER
+# ==============================
+
+print("🔍 Membaca dataset dari:", SOURCE_DIR)
+
+classes = sorted(os.listdir(SOURCE_DIR))
+
+# cek apakah sudah benar struktur
+print("\n=== Ditemukan class folder ===")
+for c in classes:
+    print(f"Class {c}")
+
+# simpan semua file
+dataset_map = {}
+
+for cls in classes:
+    cls_path = os.path.join(SOURCE_DIR, cls)
+    images = sorted(os.listdir(cls_path))
+    dataset_map[cls] = images
+
+# tampilkan info awal
+print("\n=== Informasi Jumlah Gambar ===")
+info = []
+total = 0
+
+for cls, imgs in dataset_map.items():
+    info.append([cls, len(imgs)])
+    total += len(imgs)
+
+df = pd.DataFrame(info, columns=["Class", "Jumlah"])
+print(df)
+print("\nTotal gambar:", total)
+
+# ==============================
+# 2. PREPARE FOLDER OUTPUT
+# ==============================
+
+print("\n📁 Mempersiapkan folder output...")
+
+if os.path.exists(TARGET_DIR):
+    shutil.rmtree(TARGET_DIR)
+
+for subset in ["train", "valid", "test"]:
+    os.makedirs(os.path.join(TARGET_DIR, subset), exist_ok=True)
+
+# buat folder class di setiap subset
+for subset in ["train", "valid", "test"]:
+    for cls in classes:
+        os.makedirs(os.path.join(TARGET_DIR, subset, cls), exist_ok=True)
+
+print("Folder output siap.\n")
+
+# ==============================
+# 3. STRATIFIED SPLIT
+# ==============================
+
+print("✂️ Melakukan stratified split 70/15/15...\n")
+
+split_stats = {
+    "train": defaultdict(int),
+    "valid": defaultdict(int),
+    "test": defaultdict(int)
+}
+
+for cls in classes:
+    files = dataset_map[cls]
+    random.shuffle(files)
+
+    n = len(files)
+    n_train = int(n * SPLIT_RATIO["train"])
+    n_valid = int(n * SPLIT_RATIO["valid"])
+    n_test  = n - n_train - n_valid
+
+    train_files = files[:n_train]
+    valid_files = files[n_train:n_train+n_valid]
+    test_files  = files[n_train+n_valid:]
+
+    # ==============================
+    # 4. COPY + RENAME FILES
+    # ==============================
+
+    # Train
+    for idx, fname in enumerate(train_files):
+        src = os.path.join(SOURCE_DIR, cls, fname)
+        dst_name = f"{idx:04d}.jpg"
+        dst = os.path.join(TARGET_DIR, "train", cls, dst_name)
+        shutil.copy(src, dst)
+        split_stats["train"][cls] += 1
+
+    # Valid
+    for idx, fname in enumerate(valid_files):
+        src = os.path.join(SOURCE_DIR, cls, fname)
+        dst_name = f"{idx:04d}.jpg"
+        dst = os.path.join(TARGET_DIR, "valid", cls, dst_name)
+        shutil.copy(src, dst)
+        split_stats["valid"][cls] += 1
+
+    # Test
+    for idx, fname in enumerate(test_files):
+        src = os.path.join(SOURCE_DIR, cls, fname)
+        dst_name = f"{idx:04d}.jpg"
+        dst = os.path.join(TARGET_DIR, "test", cls, dst_name)
+        shutil.copy(src, dst)
+        split_stats["test"][cls] += 1
+
+print("✔️ Stratified split selesai.\n")
+
+# ==============================
+# 5. TAMPILKAN STATISTIK
+# ==============================
+
+print("=== STATISTIK HASIL SPLIT ===")
+
+def print_stats(name):
+    print(f"\n📌 {name.upper()} STATISTICS")
+    rows = []
+    total = 0
+    for cls in classes:
+        count = split_stats[name][cls]
+        rows.append([cls, count])
+        total += count
+    df = pd.DataFrame(rows, columns=["Class", "Jumlah"])
+    print(df)
+    print("Total:", total)
+
+print_stats("train")
+print_stats("valid")
+print_stats("test")
+
+print("\n🎉 Program 1 selesai. Dataset siap dipakai training!")
+
+2. 1hama_program_2_train_A0_CNN.ipynb
+# =========================
+# Classic CNN final (with balancing + full metrics)
+# Run in Google Colab (recommended) or adjust paths for local
+# =========================
+
+# 0. Install deps (uncomment if missing)
+# !pip install -q scikit-learn seaborn tqdm
+
+# 1) Imports
+import os, shutil, time, zipfile, math
+from collections import Counter
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from tqdm import tqdm
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+import warnings
+warnings.filterwarnings("ignore")
+
+# 2) Paths & device
+# If using Colab, mount Drive (uncomment)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # user's ZIP path
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"             # final extracted folder
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_cnn_classic_final"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3) Hyperparams (tune)
+BATCH_SIZE = 32           # CPU-friendly
+CROP_SIZE = 64
+NUM_WORKERS = 2
+MAX_EPOCHS = 60
+EARLY_STOPPING_PATIENCE = 8
+LR = 1e-3
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+# 4) Copy ZIP locally & extract robustly (detect root inside zip)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive to local...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP already exists.")
+
+# ensure extract dir clean
+if os.path.exists(EXTRACT_TO):
+    print("Extract target exists:", EXTRACT_TO)
+else:
+    print("Extracting ZIP to:", EXTRACT_TO)
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        # list entries and detect root folder that contains train/valid/test
+        names = z.namelist()
+        # find candidate roots
+        candidates = set([p.split('/')[0] for p in names if p.strip()!=''])
+        chosen_root = None
+        for cand in sorted(candidates):
+            # check if cand + '/train/' in any name
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        # if found, extract only contents of that root into EXTRACT_TO
+        if chosen_root:
+            print("Detected root folder in ZIP:", chosen_root)
+            # extract all files under chosen_root to EXTRACT_TO
+            for member in names:
+                if member.startswith(chosen_root + '/'):
+                    relpath = member[len(chosen_root)+1:]
+                    if relpath == "":
+                        continue
+                    target_path = os.path.join(EXTRACT_TO, relpath)
+                    target_dir = os.path.dirname(target_path)
+                    if not os.path.exists(target_dir):
+                        os.makedirs(target_dir, exist_ok=True)
+                    if member.endswith('/'):
+                        continue
+                    with z.open(member) as src, open(target_path, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+        else:
+            # fallback: extract everything to EXTRACT_TO
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+
+# validate expected structure
+for sub in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, sub)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"Expected folder not found: {p}. Check ZIP structure.")
+print("Dataset structure OK.")
+
+# 5) Dataset transforms and loaders (ImageFolder)
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP_SIZE, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP_SIZE*1.05)),
+    transforms.CenterCrop(CROP_SIZE),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir,  transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes)
+print("Num classes:", num_classes)
+
+# 6) Imbalance report function
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    counts = Counter(labels)
+    counts_list = [counts[i] for i in range(len(classes))]
+    arr = np.array(counts_list)
+    total = arr.sum()
+    mean = arr.mean()
+    std = arr.std()
+    mn = arr.min()
+    mx = arr.max()
+    imbalance_ratio = mx / mn if mn>0 else np.inf
+    cv = std/mean if mean>0 else np.nan
+    # normalized entropy
+    ps = arr/arr.sum()
+    entropy = -np.sum([p*np.log2(p) for p in ps if p>0])
+    max_entropy = np.log2(len(arr))
+    normalized_entropy = entropy / max_entropy
+    df = pd.DataFrame({
+        "class_idx": list(range(len(classes))),
+        "class_name": classes,
+        "count": counts_list
+    })
+    summary = {
+        "total": int(total),
+        "mean": float(mean),
+        "std": float(std),
+        "min": int(mn),
+        "max": int(mx),
+        "imbalance_ratio_max_min": float(imbalance_ratio),
+        "cv": float(cv),
+        "entropy": float(entropy),
+        "normalized_entropy": float(normalized_entropy)
+    }
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+valid_df, valid_summary = imbalance_report(valid_set.samples)
+test_df, test_summary   = imbalance_report(test_set.samples)
+
+print("\n--- Imbalance SUMMARY (Train) ---")
+display(train_df)
+print(train_summary)
+print("\n--- Imbalance SUMMARY (Valid) ---")
+display(valid_df)
+print(valid_summary)
+print("\n--- Imbalance SUMMARY (Test) ---")
+display(test_df)
+print(test_summary)
+
+# quick bar plot
+plt.figure(figsize=(12,4))
+plt.bar(train_df['class_name'], train_df['count'])
+plt.xticks(rotation=45)
+plt.title("Train class counts")
+plt.show()
+
+# 7) Treatments recommended (automatic decisions)
+print("\nTreatment suggestions based on imbalance metrics:")
+if train_summary['imbalance_ratio_max_min'] > 3.0 or train_summary['cv']>0.5:
+    print("- Significant imbalance detected. We'll apply WeightedRandomSampler AND class-weighted loss.")
+    print("- Consider collecting more images for classes with smallest counts or use targeted augmentation.")
+else:
+    print("- Class distribution acceptable; we'll still use weighted loss for safety.")
+
+# 8) Balancing: compute class weights and sampler
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+print("\nClass weights for loss:", class_weights.cpu().numpy())
+
+sample_weights = [1.0 / train_counts[label] for _, label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+# 9) Define Classic CNN (4 conv layers)
+class ClassicCNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.conv1 = nn.Sequential(nn.Conv2d(3, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2))
+        self.conv2 = nn.Sequential(nn.Conv2d(16,32,3,padding=1), nn.ReLU(), nn.MaxPool2d(2))
+        self.conv3 = nn.Sequential(nn.Conv2d(32,64,3,padding=1), nn.ReLU(), nn.MaxPool2d(2))
+        self.conv4 = nn.Sequential(nn.Conv2d(64,128,3,padding=1), nn.ReLU(), nn.MaxPool2d(2))
+        self.flatten_dim = 128 * (CROP_SIZE//16) * (CROP_SIZE//16)  # 64->4
+        self.fc = nn.Sequential(nn.Linear(self.flatten_dim, 256), nn.ReLU(), nn.Dropout(0.2), nn.Linear(256, num_classes))
+    def forward(self,x):
+        x = self.conv1(x); x = self.conv2(x); x = self.conv3(x); x = self.conv4(x)
+        x = x.view(x.size(0), -1)
+        return self.fc(x)
+
+model = ClassicCNN(num_classes).to(device)
+print(model)
+print("Params:", sum(p.numel() for p in model.parameters()))
+
+# 10) Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+
+# 11) Training & evaluation helpers
+from sklearn.metrics import f1_score
+def evaluate(model, loader):
+    model.eval()
+    ys, preds = [], []
+    losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out,y)
+            losses.append(loss.item() * X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses)/len(loader.dataset)
+    acc = (np.array(ys) == np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1_macro, ys, preds
+
+best_val_f1 = 0.0
+patience = 0
+train_losses, val_losses = [], []
+train_accs, val_accs = [], []
+
+start_t = time.time()
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss = 0.0; running_correct = 0; total_samples = 0
+    batch_times = []
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch} train"):
+        t0 = time.time()
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+        running_loss += loss.item() * X.size(0)
+        running_correct += (out.argmax(1) == y).sum().item()
+        total_samples += X.size(0)
+        batch_times.append(time.time()-t0)
+    train_loss = running_loss/total_samples
+    train_acc  = running_correct/total_samples
+
+    val_loss, val_acc, val_f1, _, _ = evaluate(model, valid_loader)
+
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+
+    print(f"Epoch {epoch} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    if val_f1 > best_val_f1 + 1e-4:
+        best_val_f1 = val_f1
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "classic_cnn_best.pth"))
+        print(" -> saved best")
+        patience = 0
+    else:
+        patience += 1
+
+    if patience >= EARLY_STOPPING_PATIENCE:
+        print("Early stopping.")
+        break
+
+end_t = time.time()
+print("Training done in", round(end_t-start_t,1), "s")
+
+# 12) Load best and evaluate on test
+best_path = os.path.join(MODEL_SAVE_DIR, "classic_cnn_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    print("Loaded best model.")
+else:
+    print("Best model not found; using last state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(model, test_loader)
+print(f"\nTEST -> loss {test_loss:.4f} acc {test_acc:.4f} macroF1 {test_f1:.4f}")
+
+# 13) Full classification report & confusion matrix
+report = classification_report(ys_true, ys_pred, target_names=classes, zero_division=0)
+print("\n=== Classification Report ===\n")
+print(report)
+
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.show()
+
+# 14) Save artifacts
+with open(os.path.join(MODEL_SAVE_DIR, "classification_report.txt"), "w") as f:
+    f.write(report)
+pd.DataFrame({'class':classes, 'train_count': train_df['count']}).to_csv(os.path.join(MODEL_SAVE_DIR, "train_class_counts.csv"), index=False)
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.savefig(os.path.join(MODEL_SAVE_DIR, "confusion_matrix_test.png"))
+
+print("Artifacts saved to:", MODEL_SAVE_DIR)
+
+# 15) Show misclassified examples and a few debugging plots
+def show_misclassified(n=18):
+    bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad:
+        print("No misclassified samples.")
+        return
+    n = min(n, len(bad))
+    picks = bad[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path, true_label = test_set.samples[idx]
+        img = test_set.loader(path)
+        img = eval_transform(img)
+        imgs.append(img)
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,6)); plt.imshow(np.transpose(grid.numpy(), (1,2,0))); plt.axis('off'); plt.title("Misclassified examples")
+    print("\n".join(titles[:n]))
+show_misclassified(18)
+
+# 16) Optional ROC-AUC per class
+try:
+    y_true_bin = label_binarize(ys_true, classes=list(range(num_classes)))
+    model.eval()
+    probs=[]
+    with torch.no_grad():
+        for X,y in test_loader:
+            X = X.to(device)
+            out = model(X)
+            p = nn.functional.softmax(out, dim=1).cpu().numpy()
+            probs.append(p)
+    probs = np.vstack(probs)
+    if probs.shape[0]==len(ys_true):
+        aucs=[]
+        for i in range(num_classes):
+            try:
+                auc = roc_auc_score(y_true_bin[:,i], probs[:,i])
+            except Exception:
+                auc = np.nan
+            aucs.append(auc)
+        print("\nPer-class ROC-AUC:")
+        print(pd.DataFrame({'class':classes,'roc_auc':aucs}))
+    else:
+        print("Skipping ROC-AUC: mismatch probs vs labels")
+except Exception as e:
+    print("ROC-AUC skipped:", e)
+
+print("Done.")
+
+3. 1hama_program_2_train_A1.ipynb
+# A1: TinyESP32CNN full training + balancing + debugging + evaluation
+# Run in Google Colab (recommended). If local, remove drive.mount and change DRIVE_ZIP path.
+
+# 0. Install helpers if missing (uncomment if needed)
+# !pip install -q scikit-learn seaborn tqdm
+
+# 1. Imports
+import os, shutil, zipfile, time, math
+from collections import Counter, defaultdict
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from tqdm import tqdm
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.preprocessing import label_binarize
+
+# 2. Drive mount & paths (Colab)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # adjust if different
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"             # will contain train/valid/test
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_A1"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3. Config (tweak as needed)
+SEED = 42
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", DEVICE)
+
+BATCH_SIZE = 128          # reduce to 32/64 if CPU or low RAM
+CROP_SIZE = 64
+NUM_WORKERS = 2           # increase on powerful local machines
+LR = 1e-3
+MAX_EPOCHS = 80
+EARLY_STOPPING_PATIENCE = 8
+
+# 4. Copy zip locally (fast) and extract (auto-detect top folder)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive -> local...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP to:", EXTRACT_TO)
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        top = z.namelist()[:50]
+        print("ZIP top entries sample:", top[:20])
+        # detect if files are nested under a top folder; extract and normalize
+        z.extractall("/content/dataset/hama_temp")
+    # If extracted into /content/dataset/hama_temp/<top>/..., move the inner folder to EXTRACT_TO
+    root = "/content/dataset/hama_temp"
+    entries = os.listdir(root)
+    # find folder containing train/valid/test
+    found = None
+    for e in entries:
+        candidate = os.path.join(root, e)
+        if os.path.isdir(candidate):
+            if all(os.path.isdir(os.path.join(candidate, s)) for s in ["train","valid","test"]):
+                found = candidate
+                break
+    # fallback: maybe temp itself contains train/valid/test
+    if found is None and all(os.path.isdir(os.path.join(root, s)) for s in ["train","valid","test"]):
+        found = root
+    if found is None:
+        raise FileNotFoundError("Could not find train/valid/test inside ZIP after extraction. Inspect ZIP structure.")
+    # move found -> EXTRACT_TO
+    shutil.move(found, EXTRACT_TO)
+    shutil.rmtree(root, ignore_errors=True)
+    print("Extract done to:", EXTRACT_TO)
+else:
+    print("Extract folder already exists:", EXTRACT_TO)
+
+# verify structure
+for s in ["train","valid","test"]:
+    if not os.path.isdir(os.path.join(EXTRACT_TO, s)):
+        raise FileNotFoundError(f"Expected folder missing: {os.path.join(EXTRACT_TO, s)}")
+print("Dataset structure OK.")
+
+# 5. Transforms & datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP_SIZE, scale=(0.8, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP_SIZE*1.1)),
+    transforms.CenterCrop(CROP_SIZE),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir, transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes)
+print("Num classes:", num_classes)
+
+# 6. Imbalance report (counts + metrics)
+def imbalance_summary(samples):
+    labels = [s[1] for s in samples]
+    c = Counter(labels)
+    counts = [c[i] for i in range(len(classes))]
+    total = sum(counts)
+    mean = np.mean(counts)
+    std = np.std(counts, ddof=0)
+    mn = min(counts)
+    mx = max(counts)
+    ir = mx / mn if mn>0 else np.inf
+    cv = std / mean if mean>0 else np.nan
+    # entropy
+    ps = np.array(counts) / total
+    entropy = -(ps * np.log(ps + 1e-12)).sum()
+    normalized_entropy = entropy / np.log(len(counts))
+    return {
+        "counts": counts, "total": total, "mean": mean, "std": std,
+        "min": mn, "max": mx, "imbalance_ratio_max_min": ir,
+        "cv": cv, "entropy": entropy, "normalized_entropy": normalized_entropy
+    }
+
+print("\n--- Imbalance SUMMARY (Train) ---")
+train_summary = imbalance_summary(train_set.samples)
+df = pd.DataFrame({"class_idx": list(range(len(classes))), "class_name": classes, "count": train_summary["counts"]})
+display(df)
+print(train_summary)
+
+print("\n--- Imbalance SUMMARY (Valid) ---")
+valid_summary = imbalance_summary(valid_set.samples)
+dfv = pd.DataFrame({"class_idx": list(range(len(classes))), "class_name": classes, "count": valid_summary["counts"]})
+display(dfv)
+print(valid_summary)
+
+print("\n--- Imbalance SUMMARY (Test) ---")
+test_summary = imbalance_summary(test_set.samples)
+dft = pd.DataFrame({"class_idx": list(range(len(classes))), "class_name": classes, "count": test_summary["counts"]})
+display(dft)
+print(test_summary)
+
+# Treatment suggestions printed
+print("\nTreatment suggestions: applying WeightedRandomSampler (train) + class-weighted loss. Consider targeted augmentation or collecting more images for smallest classes.")
+
+# 7. Create class weights and sampler for training
+train_counts = train_summary["counts"]
+# class weight roughly inverse frequency (normalized)
+class_weights = torch.tensor([ (sum(train_counts)/ (len(train_counts)*c)) if c>0 else 0.0 for c in train_counts ], dtype=torch.float).to(DEVICE)
+print("\nClass weights for loss:", class_weights.cpu().numpy())
+
+sample_weights = [1.0 / train_counts[label] for _, label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8. TinyESP32CNN model (3 depthwise blocks, FC 2048->64->num_classes)
+class TinyESP32CNN(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        def depthwise_pw(in_ch, out_ch):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False), # depthwise
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),                          # pointwise
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2,2)
+            )
+        self.features = nn.Sequential(
+            depthwise_pw(3, 8),    # 64 -> 32
+            depthwise_pw(8, 16),   # 32 -> 16
+            depthwise_pw(16, 32),  # 16 -> 8
+        )
+        # flatten: 32 * 8 * 8 = 2048
+        self.classifier = nn.Sequential(
+            nn.Linear(32*8*8, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+model = TinyESP32CNN(num_classes).to(DEVICE)
+n_params = sum(p.numel() for p in model.parameters())
+print("\nTinyESP32CNN params:", n_params)
+est_kb_fp32 = n_params * 4 / 1024
+print(f"Est. float32 size: {est_kb_fp32:.1f} KB. (INT8 quantized binary likely ~{est_kb_fp32/4:.1f} KB)")
+
+# 9. Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+# Use ReduceLROnPlateau WITHOUT verbose arg to avoid earlier error
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+
+# 10. Hook to capture activations for debugging
+activations = {}
+def get_activation(name):
+    def hook(model, input, output):
+        activations[name] = output.detach().cpu()
+    return hook
+# register hook on first conv depthwise (features[0][0] is depthwise conv)
+model.features[0][0].register_forward_hook(get_activation('conv1_dw'))
+
+# 11. Evaluation helpers
+def evaluate_loader(model, loader, device, return_preds=False):
+    model.eval()
+    ys, preds, losses = [], [], []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out, y)
+            losses.append(loss.item() * X.size(0))
+            p = out.argmax(1).cpu().numpy()
+            preds.extend(p.tolist()); ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses)/len(loader.dataset)
+    acc = (np.array(ys) == np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    if return_preds:
+        return avg_loss, acc, f1_macro, ys, preds
+    return avg_loss, acc, f1_macro
+
+def compute_report(ys, preds, classes):
+    rep = classification_report(ys, preds, labels=list(range(len(classes))), target_names=classes, zero_division=0, output_dict=True)
+    cm = confusion_matrix(ys, preds, labels=list(range(len(classes))))
+    return rep, cm
+
+# 12. Training loop with early stopping on val macro-F1
+best_val_f1 = 0.0
+patience = 0
+train_losses, val_losses = [], []
+train_accs, val_accs = [], []
+batch_time_logs = []
+
+start_time = time.time()
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss = 0.0
+    running_correct = 0
+    n_samples = 0
+    batch_times = []
+    grad_norms = []
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch} training"):
+        t0 = time.time()
+        X,y = X.to(DEVICE), y.to(DEVICE)
+        out = model(X)
+        loss = criterion(out, y)
+        optimizer.zero_grad()
+        loss.backward()
+        # grad norm
+        grad_norm = 0.0
+        for p in model.parameters():
+            if p.grad is not None:
+                grad_norm += p.grad.data.norm(2).item() ** 2
+        grad_norm = math.sqrt(grad_norm)
+        grad_norms.append(grad_norm)
+        optimizer.step()
+
+        running_loss += loss.item() * X.size(0)
+        running_correct += (out.argmax(1) == y).sum().item()
+        n_samples += X.size(0)
+        batch_times.append(time.time()-t0)
+
+    train_loss = running_loss / n_samples
+    train_acc = running_correct / n_samples
+
+    val_loss, val_acc, val_f1, ys_val, preds_val = evaluate_loader(model, valid_loader, DEVICE, return_preds=True)
+
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+    batch_time_logs.append(np.mean(batch_times))
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    # scheduler step on val F1 (maximize)
+    scheduler.step(val_f1)
+
+    # save best
+    if val_f1 > best_val_f1 + 1e-4:
+        best_val_f1 = val_f1
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "A1_TinyESP32CNN_best.pth"))
+        print("  -> saved best")
+        patience = 0
+    else:
+        patience += 1
+
+    # early stopping
+    if patience >= EARLY_STOPPING_PATIENCE:
+        print("Early stopping triggered.")
+        break
+
+end_time = time.time()
+print("Training finished in", round(end_time-start_time,1), "s")
+
+# 13. Load best model and final evaluation on test
+best_path = os.path.join(MODEL_SAVE_DIR, "A1_TinyESP32CNN_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=DEVICE))
+    print("Loaded best model:", best_path)
+else:
+    print("Best model not found; using last state.")
+
+test_loss, test_acc, test_f1, ys_test, preds_test = evaluate_loader(model, test_loader, DEVICE, return_preds=True)
+print(f"\n=== TEST RESULTS ===\nLoss: {test_loss:.4f} | Acc: {test_acc:.4f} | Macro F1: {test_f1:.4f}")
+
+# 14. Full classification report & confusion matrix
+report_dict, cm = compute_report(ys_test, preds_test, classes)
+report_df = pd.DataFrame(report_dict).transpose()
+print("\nClassification report (table):")
+display(report_df)
+
+plt.figure(figsize=(10,8))
+sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues")
+plt.xlabel("Predicted"); plt.ylabel("True"); plt.title("Confusion Matrix (Test)")
+plt.show()
+
+# 15. Debugging visuals
+# Learning curves
+plt.figure(figsize=(12,5))
+plt.subplot(1,2,1); plt.plot(train_losses, label='train_loss'); plt.plot(val_losses, label='val_loss'); plt.legend(); plt.title("Loss")
+plt.subplot(1,2,2); plt.plot(train_accs, label='train_acc'); plt.plot(val_accs, label='val_acc'); plt.legend(); plt.title("Accuracy")
+plt.show()
+
+# Misclassified samples (first N)
+def show_misclassified(n=18):
+    bad_idx = [i for i,(t,p) in enumerate(zip(ys_test, preds_test)) if t!=p]
+    if len(bad_idx)==0:
+        print("No misclassified samples.")
+        return
+    picks = bad_idx[:n]
+    imgs, titles = [], []
+    for idx in picks:
+        path, true = test_set.samples[idx]
+        img = test_set.loader(path)
+        inp = eval_transform(img)
+        imgs.append(inp)
+        titles.append(f"T:{classes[true]} P:{classes[preds_test[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,8))
+    plt.imshow(np.transpose(grid.numpy(), (1,2,0))); plt.axis('off')
+    print("\n".join(titles[:n]))
+show_misclassified(18)
+
+# Activation maps (first depthwise conv) for a few test samples
+def visualize_activations(sample_idx=0, n_maps=8):
+    model.eval()
+    path, label = test_set.samples[sample_idx]
+    img = test_set.loader(path)
+    inp = eval_transform(img).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        _ = model(inp)
+    if 'conv1_dw' in activations:
+        acts = activations['conv1_dw'].squeeze(0)  # [C,H,W]
+        n_maps = min(n_maps, acts.shape[0])
+        fig, axes = plt.subplots(1, n_maps, figsize=(n_maps*2,2))
+        for i in range(n_maps):
+            axes[i].imshow(acts[i].numpy(), cmap='viridis'); axes[i].axis('off')
+        plt.suptitle(f"First depthwise conv maps for sample {sample_idx} (label={classes[label]})")
+        plt.show()
+    else:
+        print("No activation captured.")
+visualize_activations(0, n_maps=8)
+
+# Weight histograms
+def plot_weight_hists():
+    plt.figure(figsize=(10,6))
+    for i,(name,param) in enumerate(model.named_parameters()):
+        if 'weight' in name and param.dim()>1:
+            plt.subplot(2,3,(i%6)+1); plt.hist(param.detach().cpu().numpy().ravel(), bins=50); plt.title(name)
+    plt.tight_layout()
+plot_weight_hists()
+
+# 16. Save artifacts
+report_df.to_csv(os.path.join(MODEL_SAVE_DIR, "A1_classification_report.csv"))
+plt.figure(figsize=(10,8))
+sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues")
+plt.savefig(os.path.join(MODEL_SAVE_DIR, "A1_confusion_matrix_test.png"), bbox_inches='tight')
+print("Artifacts saved to:", MODEL_SAVE_DIR)
+
+# 17. Final notes
+print("\nDone. Suggested next steps:")
+print("- If test macro-F1 is good (>=0.75), try quantization (TFLite INT8).")
+print("- If some classes still poor, consider targeted augmentation for those classes or collecting more images.")
+
+4. # A2 - TinyESP32CNN (Depthwise ALL) PIPELINE
+# Run in Google Colab (recommended). If local, adjust DRIVE_ZIP path and skip drive.mount.
+# Installs: optional tensorflow for TFLite conversion (heavy). Only enable if you need conversion here.
+
+# 0) (Optional) Install heavy deps only if you plan to convert to TFLite here.
+# Uncomment if needed (may take a few minutes).
+# !pip install -q tensorflow==2.12.0  # choose compatible TF version in Colab
+# !pip install -q onnx onnx-tf
+
+# 1) Imports
+import os, shutil, zipfile, time, math
+from collections import Counter
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from tqdm import tqdm
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+# 2) Drive paths & device
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # change if different
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"             # will contain train/valid/test
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_A2"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3) Hyperparams & seed
+BATCH_SIZE = 64
+CROP_SIZE = 64
+NUM_WORKERS = 2
+MAX_EPOCHS = 80
+EARLY_STOPPING_PATIENCE = 8
+LR = 1e-3
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
+# 4) Copy zip local & extract (robust detection of root folder)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive -> local ...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+# Extract (only once)
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP to:", EXTRACT_TO)
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        # detect top root folder that contains train/
+        candidates = set([p.split('/')[0] for p in names if p.strip()!=''])
+        chosen_root = None
+        for cand in sorted(candidates):
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        if chosen_root:
+            base_len = len(chosen_root) + 1
+            for member in names:
+                if member.startswith(chosen_root + '/'):
+                    rel = member[base_len:]
+                    if rel == "" or member.endswith('/'):
+                        continue
+                    target = os.path.join(EXTRACT_TO, rel)
+                    td = os.path.dirname(target)
+                    os.makedirs(td, exist_ok=True)
+                    with z.open(member) as src, open(target, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+        else:
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+else:
+    print("Extract folder exists:", EXTRACT_TO)
+
+# Validate expected structure
+for s in ["train","valid","test"]:
+    if not os.path.isdir(os.path.join(EXTRACT_TO, s)):
+        raise FileNotFoundError(f"Missing expected folder: {os.path.join(EXTRACT_TO, s)}")
+print("Structure OK.")
+
+# 5) Transforms & Datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP_SIZE, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP_SIZE*1.05)),
+    transforms.CenterCrop(CROP_SIZE),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir, transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes, "Num:", num_classes)
+
+# 6) Imbalance report (counts + numeric metrics)
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    counts = Counter(labels)
+    counts_list = [counts[i] for i in range(len(classes))]
+    arr = np.array(counts_list)
+    total = int(arr.sum())
+    mean = float(arr.mean()); std = float(arr.std()); mn = int(arr.min()); mx = int(arr.max())
+    imbalance_ratio = float(mx / mn) if mn>0 else float('inf')
+    cv = float(std/mean) if mean>0 else float('nan')
+    ps = arr/arr.sum()
+    entropy = -float(np.sum([p*np.log2(p) for p in ps if p>0]))
+    normalized_entropy = entropy / np.log2(len(arr))
+    df = pd.DataFrame({"class_idx": list(range(len(classes))), "class_name": classes, "count": counts_list})
+    summary = {"total": total, "mean": mean, "std": std, "min": mn, "max": mx, "imbalance_ratio_max_min": imbalance_ratio, "cv": cv, "entropy": entropy, "normalized_entropy": normalized_entropy}
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+print("\n--- Imbalance SUMMARY (Train) ---")
+display(train_df); print(train_summary)
+
+# bar plot
+plt.figure(figsize=(10,3)); plt.bar(train_df['class_name'], train_df['count']); plt.xticks(rotation=45); plt.title("Train class counts"); plt.show()
+
+# 7) Balancing: class weights + WeightedRandomSampler
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+print("Class weights for loss:", class_weights.cpu().numpy())
+
+sample_weights = [1.0 / train_counts[label] for _, label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8) Define A2 TinyESP32CNN (Depthwise ALL)
+class TinyA2_DepthwiseAll(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        # helper: depthwise + pointwise + act + pool
+        def depthwise_block(in_ch, out_ch):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False),  # depthwise
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),                           # pointwise
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2)
+            )
+        # channels: 3 -> 6 -> 12 -> 24
+        self.features = nn.Sequential(
+            depthwise_block(3, 6),    # 64 -> 32
+            depthwise_block(6, 12),   # 32 -> 16
+            depthwise_block(12, 24)   # 16 -> 8
+        )
+        # flatten: 24 * 8 * 8 = 1536
+        self.classifier = nn.Sequential(
+            nn.Linear(24 * 8 * 8, 32),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(32, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+model = TinyA2_DepthwiseAll(num_classes).to(device)
+n_params = sum(p.numel() for p in model.parameters())
+print("Model A2 - params:", n_params, "≈", (n_params*4)/1024, "KB (float32)")
+
+# 9) Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)  # no verbose arg
+
+# 10) Diagnostics & hooks for activations
+activation = {}
+def get_activation(name):
+    def hook(model, input, output):
+        activation[name] = output.detach().cpu()
+    return hook
+# register first conv's activation for debugging
+model.features[0].register_forward_hook(get_activation('feat0'))
+
+# evaluation helpers
+def evaluate(model, loader):
+    model.eval()
+    ys, preds = [], []
+    losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out, y)
+            losses.append(loss.item() * X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses) / len(loader.dataset)
+    acc = (np.array(ys) == np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1_macro, ys, preds
+
+# 11) Training loop (with early stopping on val macro-F1)
+best_val_f1 = 0.0
+patience = 0
+train_losses, val_losses = [], []
+train_accs, val_accs = [], []
+start_time = time.time()
+
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss=0.0; running_correct=0; total=0
+    batch_times=[]
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch} train"):
+        t0=time.time()
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+        running_loss += loss.item() * X.size(0)
+        running_correct += (out.argmax(1) == y).sum().item()
+        total += X.size(0)
+        batch_times.append(time.time()-t0)
+    train_loss = running_loss / total
+    train_acc = running_correct / total
+
+    val_loss, val_acc, val_f1, _, _ = evaluate(model, valid_loader)
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    if val_f1 > best_val_f1 + 1e-4:
+        best_val_f1 = val_f1
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "A2_best.pth"))
+        print("  -> saved best (val_f1 improved).")
+        patience = 0
+    else:
+        patience += 1
+
+    if patience >= EARLY_STOPPING_PATIENCE:
+        print("Early stopping triggered.")
+        break
+
+end_time = time.time()
+print("Training finished in", round(end_time - start_time,1), "s | Best val f1:", best_val_f1)
+
+# 12) Load best model & evaluate on test
+best_path = os.path.join(MODEL_SAVE_DIR, "A2_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    print("Loaded best model.")
+else:
+    print("No best model found; using final state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(model, test_loader)
+print(f"\n=== TEST RESULTS ===\nLoss {test_loss:.4f} Acc {test_acc:.4f} MacroF1 {test_f1:.4f}")
+
+# 13) Full metrics
+print("\nClassification Report:")
+print(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.show()
+
+# 14) Debugging visuals
+# 14.1 Learning curves
+plt.figure(figsize=(10,4)); plt.subplot(1,2,1); plt.plot(train_losses,label='train_loss'); plt.plot(val_losses,label='val_loss'); plt.legend(); plt.title('Loss');
+plt.subplot(1,2,2); plt.plot(train_accs,label='train_acc'); plt.plot(val_accs,label='val_acc'); plt.legend(); plt.title('Acc'); plt.show()
+
+# 14.2 show some misclassified examples
+def show_misclassified(n=18):
+    bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad:
+        print("No misclassified")
+        return
+    picks = bad[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path, true_label = test_set.samples[idx]
+        img = test_set.loader(path)
+        img = eval_transform(img)
+        imgs.append(img)
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,6)); plt.imshow(np.transpose(grid.numpy(), (1,2,0))); plt.axis('off'); plt.title("Misclassified"); plt.show()
+    print("\n".join(titles[:len(picks)]))
+show_misclassified(18)
+
+# 14.3 visualize first conv activations for sample 0
+def visualize_acts(idx=0, n_maps=8):
+    model.eval()
+    path, label = test_set.samples[idx]
+    img = test_set.loader(path)
+    inp = eval_transform(img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        _ = model(inp)
+    if 'feat0' in activation:
+        acts = activation['feat0'].squeeze(0)
+        n_maps = min(n_maps, acts.shape[0])
+        fig, axs = plt.subplots(1,n_maps,figsize=(n_maps*2,2))
+        for i in range(n_maps):
+            axs[i].imshow(acts[i].numpy(), cmap='viridis'); axs[i].axis('off')
+        plt.suptitle(f"First-conv maps (sample {idx})"); plt.show()
+    else:
+        print("No activations captured.")
+visualize_acts(0,8)
+
+# 15) Estimate model size (float32 & approximate INT8)
+float_bytes = n_params * 4
+print("Float32 size (approx):", float_bytes/1024, "KB")
+# Int8 size approx (weights only) roughly n_params bytes + small overhead
+approx_int8 = n_params / 1024
+print("Est. INT8 size (weights only): ~{:.1f} KB".format(approx_int8))
+
+# 16) CONVERT to TFLite INT8 (optional & may require TF installed)
+# This block attempts to convert using representative dataset for full integer quant.
+# It is optional — uncomment if you installed tensorflow in the env.
+"""
+import tensorflow as tf
+
+# 16.1 Export PyTorch model to ONNX
+onnx_path = "/content/A2_model.onnx"
+dummy = torch.randn(1,3,CROP_SIZE,CROP_SIZE, device='cpu')
+torch.onnx.export(model.cpu(), dummy, onnx_path, opset_version=11, input_names=['input'], output_names=['output'], dynamic_axes=None)
+print("Exported ONNX ->", onnx_path)
+
+# 16.2 Convert ONNX -> TF SavedModel (requires onnx-tf)
+from onnx_tf.backend import prepare
+import onnx
+onnx_model = onnx.load(onnx_path)
+tf_rep = prepare(onnx_model)
+saved_model_dir = "/content/A2_savedmodel"
+tf_rep.export_graph(saved_model_dir)
+print("Saved TF model:", saved_model_dir)
+
+# 16.3 Convert to TFLite with full integer quantization using representative dataset
+def representative_gen():
+    for i, (X,y) in enumerate(train_loader):
+        if i>100: break
+        X = X.numpy().astype(np.float32)
+        for j in range(X.shape[0]):
+            yield [X[j:j+1,:,:,:]]
+converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.representative_dataset = representative_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.int8
+converter.inference_output_type = tf.int8
+tflite_model = converter.convert()
+open("/content/A2_model_int8.tflite","wb").write(tflite_model)
+print("TFLite INT8 saved.")
+"""
+
+# 17) Save PyTorch model (state_dict) and label mapping
+torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "A2_final.pth"))
+import json
+with open(os.path.join(MODEL_SAVE_DIR, "label2cat_A2.json"), "w") as f:
+    json.dump(classes, f)
+print("Saved artifacts to", MODEL_SAVE_DIR)
+
+# 18) If you produced A2_model_int8.tflite, you can create a C array for Arduino sketch:
+#    hexdump -v -e '1/1 "0x%02X,"' A2_model_int8.tflite > model_data.h
+# or use Python to write .h wrapper.
+
+print("PIPELINE COMPLETE. If you want TFLite conversion help, uncomment TF block and run the conversion steps (TF must be installed).")
+
+4. 1hama_program_2_train_A2.ipynb
+# A2 - TinyESP32CNN (Depthwise ALL) PIPELINE
+# Run in Google Colab (recommended). If local, adjust DRIVE_ZIP path and skip drive.mount.
+# Installs: optional tensorflow for TFLite conversion (heavy). Only enable if you need conversion here.
+
+# 0) (Optional) Install heavy deps only if you plan to convert to TFLite here.
+# Uncomment if needed (may take a few minutes).
+# !pip install -q tensorflow==2.12.0  # choose compatible TF version in Colab
+# !pip install -q onnx onnx-tf
+
+# 1) Imports
+import os, shutil, zipfile, time, math
+from collections import Counter
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+from tqdm import tqdm
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+# 2) Drive paths & device
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # change if different
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"             # will contain train/valid/test
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_A2"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3) Hyperparams & seed
+BATCH_SIZE = 64
+CROP_SIZE = 64
+NUM_WORKERS = 2
+MAX_EPOCHS = 80
+EARLY_STOPPING_PATIENCE = 8
+LR = 1e-3
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
+# 4) Copy zip local & extract (robust detection of root folder)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive -> local ...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+# Extract (only once)
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP to:", EXTRACT_TO)
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        # detect top root folder that contains train/
+        candidates = set([p.split('/')[0] for p in names if p.strip()!=''])
+        chosen_root = None
+        for cand in sorted(candidates):
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        if chosen_root:
+            base_len = len(chosen_root) + 1
+            for member in names:
+                if member.startswith(chosen_root + '/'):
+                    rel = member[base_len:]
+                    if rel == "" or member.endswith('/'):
+                        continue
+                    target = os.path.join(EXTRACT_TO, rel)
+                    td = os.path.dirname(target)
+                    os.makedirs(td, exist_ok=True)
+                    with z.open(member) as src, open(target, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+        else:
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+else:
+    print("Extract folder exists:", EXTRACT_TO)
+
+# Validate expected structure
+for s in ["train","valid","test"]:
+    if not os.path.isdir(os.path.join(EXTRACT_TO, s)):
+        raise FileNotFoundError(f"Missing expected folder: {os.path.join(EXTRACT_TO, s)}")
+print("Structure OK.")
+
+# 5) Transforms & Datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP_SIZE, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP_SIZE*1.05)),
+    transforms.CenterCrop(CROP_SIZE),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir, transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes, "Num:", num_classes)
+
+# 6) Imbalance report (counts + numeric metrics)
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    counts = Counter(labels)
+    counts_list = [counts[i] for i in range(len(classes))]
+    arr = np.array(counts_list)
+    total = int(arr.sum())
+    mean = float(arr.mean()); std = float(arr.std()); mn = int(arr.min()); mx = int(arr.max())
+    imbalance_ratio = float(mx / mn) if mn>0 else float('inf')
+    cv = float(std/mean) if mean>0 else float('nan')
+    ps = arr/arr.sum()
+    entropy = -float(np.sum([p*np.log2(p) for p in ps if p>0]))
+    normalized_entropy = entropy / np.log2(len(arr))
+    df = pd.DataFrame({"class_idx": list(range(len(classes))), "class_name": classes, "count": counts_list})
+    summary = {"total": total, "mean": mean, "std": std, "min": mn, "max": mx, "imbalance_ratio_max_min": imbalance_ratio, "cv": cv, "entropy": entropy, "normalized_entropy": normalized_entropy}
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+print("\n--- Imbalance SUMMARY (Train) ---")
+display(train_df); print(train_summary)
+
+# bar plot
+plt.figure(figsize=(10,3)); plt.bar(train_df['class_name'], train_df['count']); plt.xticks(rotation=45); plt.title("Train class counts"); plt.show()
+
+# 7) Balancing: class weights + WeightedRandomSampler
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+print("Class weights for loss:", class_weights.cpu().numpy())
+
+sample_weights = [1.0 / train_counts[label] for _, label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8) Define A2 TinyESP32CNN (Depthwise ALL)
+class TinyA2_DepthwiseAll(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        # helper: depthwise + pointwise + act + pool
+        def depthwise_block(in_ch, out_ch):
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1, groups=in_ch, bias=False),  # depthwise
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False),                           # pointwise
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2)
+            )
+        # channels: 3 -> 6 -> 12 -> 24
+        self.features = nn.Sequential(
+            depthwise_block(3, 6),    # 64 -> 32
+            depthwise_block(6, 12),   # 32 -> 16
+            depthwise_block(12, 24)   # 16 -> 8
+        )
+        # flatten: 24 * 8 * 8 = 1536
+        self.classifier = nn.Sequential(
+            nn.Linear(24 * 8 * 8, 32),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(32, num_classes)
+        )
+    def forward(self, x):
+        x = self.features(x)
+        x = x.view(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+model = TinyA2_DepthwiseAll(num_classes).to(device)
+n_params = sum(p.numel() for p in model.parameters())
+print("Model A2 - params:", n_params, "≈", (n_params*4)/1024, "KB (float32)")
+
+# 9) Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)  # no verbose arg
+
+# 10) Diagnostics & hooks for activations
+activation = {}
+def get_activation(name):
+    def hook(model, input, output):
+        activation[name] = output.detach().cpu()
+    return hook
+# register first conv's activation for debugging
+model.features[0].register_forward_hook(get_activation('feat0'))
+
+# evaluation helpers
+def evaluate(model, loader):
+    model.eval()
+    ys, preds = [], []
+    losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out, y)
+            losses.append(loss.item() * X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses) / len(loader.dataset)
+    acc = (np.array(ys) == np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1_macro, ys, preds
+
+# 11) Training loop (with early stopping on val macro-F1)
+best_val_f1 = 0.0
+patience = 0
+train_losses, val_losses = [], []
+train_accs, val_accs = [], []
+start_time = time.time()
+
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss=0.0; running_correct=0; total=0
+    batch_times=[]
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch} train"):
+        t0=time.time()
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+        running_loss += loss.item() * X.size(0)
+        running_correct += (out.argmax(1) == y).sum().item()
+        total += X.size(0)
+        batch_times.append(time.time()-t0)
+    train_loss = running_loss / total
+    train_acc = running_correct / total
+
+    val_loss, val_acc, val_f1, _, _ = evaluate(model, valid_loader)
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    if val_f1 > best_val_f1 + 1e-4:
+        best_val_f1 = val_f1
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "A2_best.pth"))
+        print("  -> saved best (val_f1 improved).")
+        patience = 0
+    else:
+        patience += 1
+
+    if patience >= EARLY_STOPPING_PATIENCE:
+        print("Early stopping triggered.")
+        break
+
+end_time = time.time()
+print("Training finished in", round(end_time - start_time,1), "s | Best val f1:", best_val_f1)
+
+# 12) Load best model & evaluate on test
+best_path = os.path.join(MODEL_SAVE_DIR, "A2_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    print("Loaded best model.")
+else:
+    print("No best model found; using final state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(model, test_loader)
+print(f"\n=== TEST RESULTS ===\nLoss {test_loss:.4f} Acc {test_acc:.4f} MacroF1 {test_f1:.4f}")
+
+# 13) Full metrics
+print("\nClassification Report:")
+print(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.show()
+
+# 14) Debugging visuals
+# 14.1 Learning curves
+plt.figure(figsize=(10,4)); plt.subplot(1,2,1); plt.plot(train_losses,label='train_loss'); plt.plot(val_losses,label='val_loss'); plt.legend(); plt.title('Loss');
+plt.subplot(1,2,2); plt.plot(train_accs,label='train_acc'); plt.plot(val_accs,label='val_acc'); plt.legend(); plt.title('Acc'); plt.show()
+
+# 14.2 show some misclassified examples
+def show_misclassified(n=18):
+    bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad:
+        print("No misclassified")
+        return
+    picks = bad[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path, true_label = test_set.samples[idx]
+        img = test_set.loader(path)
+        img = eval_transform(img)
+        imgs.append(img)
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,6)); plt.imshow(np.transpose(grid.numpy(), (1,2,0))); plt.axis('off'); plt.title("Misclassified"); plt.show()
+    print("\n".join(titles[:len(picks)]))
+show_misclassified(18)
+
+# 14.3 visualize first conv activations for sample 0
+def visualize_acts(idx=0, n_maps=8):
+    model.eval()
+    path, label = test_set.samples[idx]
+    img = test_set.loader(path)
+    inp = eval_transform(img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        _ = model(inp)
+    if 'feat0' in activation:
+        acts = activation['feat0'].squeeze(0)
+        n_maps = min(n_maps, acts.shape[0])
+        fig, axs = plt.subplots(1,n_maps,figsize=(n_maps*2,2))
+        for i in range(n_maps):
+            axs[i].imshow(acts[i].numpy(), cmap='viridis'); axs[i].axis('off')
+        plt.suptitle(f"First-conv maps (sample {idx})"); plt.show()
+    else:
+        print("No activations captured.")
+visualize_acts(0,8)
+
+# 15) Estimate model size (float32 & approximate INT8)
+float_bytes = n_params * 4
+print("Float32 size (approx):", float_bytes/1024, "KB")
+# Int8 size approx (weights only) roughly n_params bytes + small overhead
+approx_int8 = n_params / 1024
+print("Est. INT8 size (weights only): ~{:.1f} KB".format(approx_int8))
+
+# 16) CONVERT to TFLite INT8 (optional & may require TF installed)
+# This block attempts to convert using representative dataset for full integer quant.
+# It is optional — uncomment if you installed tensorflow in the env.
+"""
+import tensorflow as tf
+
+# 16.1 Export PyTorch model to ONNX
+onnx_path = "/content/A2_model.onnx"
+dummy = torch.randn(1,3,CROP_SIZE,CROP_SIZE, device='cpu')
+torch.onnx.export(model.cpu(), dummy, onnx_path, opset_version=11, input_names=['input'], output_names=['output'], dynamic_axes=None)
+print("Exported ONNX ->", onnx_path)
+
+# 16.2 Convert ONNX -> TF SavedModel (requires onnx-tf)
+from onnx_tf.backend import prepare
+import onnx
+onnx_model = onnx.load(onnx_path)
+tf_rep = prepare(onnx_model)
+saved_model_dir = "/content/A2_savedmodel"
+tf_rep.export_graph(saved_model_dir)
+print("Saved TF model:", saved_model_dir)
+
+# 16.3 Convert to TFLite with full integer quantization using representative dataset
+def representative_gen():
+    for i, (X,y) in enumerate(train_loader):
+        if i>100: break
+        X = X.numpy().astype(np.float32)
+        for j in range(X.shape[0]):
+            yield [X[j:j+1,:,:,:]]
+converter = tf.lite.TFLiteConverter.from_saved_model(saved_model_dir)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
+converter.representative_dataset = representative_gen
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+converter.inference_input_type = tf.int8
+converter.inference_output_type = tf.int8
+tflite_model = converter.convert()
+open("/content/A2_model_int8.tflite","wb").write(tflite_model)
+print("TFLite INT8 saved.")
+"""
+
+# 17) Save PyTorch model (state_dict) and label mapping
+torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "A2_final.pth"))
+import json
+with open(os.path.join(MODEL_SAVE_DIR, "label2cat_A2.json"), "w") as f:
+    json.dump(classes, f)
+print("Saved artifacts to", MODEL_SAVE_DIR)
+
+# 18) If you produced A2_model_int8.tflite, you can create a C array for Arduino sketch:
+#    hexdump -v -e '1/1 "0x%02X,"' A2_model_int8.tflite > model_data.h
+# or use Python to write .h wrapper.
+
+print("PIPELINE COMPLETE. If you want TFLite conversion help, uncomment TF block and run the conversion steps (TF must be installed).")
+5. 1hama_program_2_train_A3.ipynb
+import os, shutil, zipfile
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split_a3"   # folder khusus A3
+
+if not os.path.exists(LOCAL_ZIP):
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP already present.")
+
+if os.path.exists(EXTRACT_TO):
+    print("Extract exists; using it.")
+else:
+    print("Extracting ZIP...")
+    with zipfile.ZipFile(LOCAL_ZIP,'r') as z:
+        names = z.namelist()
+        root = {p.split('/')[0] for p in names}
+        chosen = None
+        for r in root:
+            if any(n.startswith(r+'/train/') for n in names):
+                chosen = r
+                break
+
+        if chosen:
+            print("Detected root:", chosen)
+            for m in names:
+                if m.startswith(chosen+'/'):
+                    rel = m[len(chosen)+1:]
+                    if rel == "" or m.endswith('/'):
+                        continue
+                    dest = os.path.join(EXTRACT_TO, rel)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with z.open(m) as src, open(dest,'wb') as dst:
+                        shutil.copyfileobj(src,dst)
+        else:
+            z.extractall(EXTRACT_TO)
+
+print("Dataset extracted to:", EXTRACT_TO)
+
+for s in ["train","valid","test"]:
+    path = os.path.join(EXTRACT_TO, s)
+    if not os.path.isdir(path):
+        raise FileNotFoundError(f"Missing: {path}")
+
+print("Dataset structure OK.")
+6. 1hama_program_2_train_B1.ipynb
+import os, zipfile, shutil
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+
+os.makedirs("/content/dataset/hama", exist_ok=True)
+
+# Copy zip
+if not os.path.exists(LOCAL_ZIP):
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+    print("ZIP copied.")
+else:
+    print("ZIP already exists.")
+
+
+# Clean old extraction
+if os.path.exists(EXTRACT_TO):
+    shutil.rmtree(EXTRACT_TO)
+os.makedirs(EXTRACT_TO, exist_ok=True)
+
+
+# ================================
+# AUTO-DETECT train/valid/test
+# ================================
+def find_root_with_subfolders(zip_names):
+    """
+    Cari folder induk yang memiliki train/, valid/, test/
+    """
+    folders = set([name.split('/')[0] for name in zip_names if '/' in name])
+
+    for root in sorted(folders):
+        has_train = any(name.startswith(root + "/train/") for name in zip_names)
+        has_valid = any(name.startswith(root + "/valid/") for name in zip_names)
+        has_test  = any(name.startswith(root + "/test/")  for name in zip_names)
+        if has_train and has_valid and has_test:
+            return root
+    return None
+
+
+# Extract smart
+with zipfile.ZipFile(LOCAL_ZIP, "r") as z:
+    names = z.namelist()
+    root = find_root_with_subfolders(names)
+
+    if root:
+        print("Detected dataset root folder:", root)
+        for member in names:
+            if member.startswith(root + "/"):
+                rel = member[len(root)+1:]
+                if rel.strip() == "":
+                    continue
+                target = os.path.join(EXTRACT_TO, rel)
+                if member.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+    else:
+        print("Root not detected. Extracting everything...")
+        z.extractall(EXTRACT_TO)
+
+
+# ================================
+# Validate structure
+# ================================
+for sub in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, sub)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"❌ Missing folder: {p}\nZIP structure invalid.")
+
+print("✅ Dataset OK!")
+7. 1hama_program_2_train_B2.ipynb
+import os, zipfile, shutil
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+
+os.makedirs("/content/dataset/hama", exist_ok=True)
+
+# Copy zip
+if not os.path.exists(LOCAL_ZIP):
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+    print("ZIP copied.")
+else:
+    print("ZIP already exists.")
+
+
+# Clean old extraction
+if os.path.exists(EXTRACT_TO):
+    shutil.rmtree(EXTRACT_TO)
+os.makedirs(EXTRACT_TO, exist_ok=True)
+
+
+# ================================
+# AUTO-DETECT train/valid/test
+# ================================
+def find_root_with_subfolders(zip_names):
+    """
+    Cari folder induk yang memiliki train/, valid/, test/
+    """
+    folders = set([name.split('/')[0] for name in zip_names if '/' in name])
+
+    for root in sorted(folders):
+        has_train = any(name.startswith(root + "/train/") for name in zip_names)
+        has_valid = any(name.startswith(root + "/valid/") for name in zip_names)
+        has_test  = any(name.startswith(root + "/test/")  for name in zip_names)
+        if has_train and has_valid and has_test:
+            return root
+    return None
+
+
+# Extract smart
+with zipfile.ZipFile(LOCAL_ZIP, "r") as z:
+    names = z.namelist()
+    root = find_root_with_subfolders(names)
+
+    if root:
+        print("Detected dataset root folder:", root)
+        for member in names:
+            if member.startswith(root + "/"):
+                rel = member[len(root)+1:]
+                if rel.strip() == "":
+                    continue
+                target = os.path.join(EXTRACT_TO, rel)
+                if member.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(member) as src, open(target, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+    else:
+        print("Root not detected. Extracting everything...")
+        z.extractall(EXTRACT_TO)
+
+
+# ================================
+# Validate structure
+# ================================
+for sub in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, sub)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"❌ Missing folder: {p}\nZIP structure invalid.")
+
+print("✅ Dataset OK!")
+8. 1hama_program_2_train_C1.ipynb
+# C2 — Tiny-MobileNetV2-Optimized (full pipeline)
+# Run in Google Colab (recommended). If local, remove drive.mount and adjust paths.
+
+# 0) Installs (uncomment if needed)
+# !pip install -q scikit-learn seaborn tqdm
+
+# 1) Imports
+import os, shutil, time, zipfile, math
+from collections import Counter
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings("ignore")
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+# 2) Drive mount & paths (Colab)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # <-- update if needed
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_C2_TinyMobileNetV2_opt"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3) Hyperparams & device
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+
+CROP = 64
+BATCH = 32
+NUM_WORKERS = 2
+LR = 1e-3
+MAX_EPOCHS = 80
+EARLY_STOPPING = 8
+ALPHA = 0.3   # width multiplier (smaller -> lighter)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
+# 4) Copy & robust extract (detect root folder if ZIP contains extra top folder)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive to local...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP...")
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        # detect candidate root that contains train/
+        candidates = sorted(set([p.split('/')[0] for p in names if p.strip()!='']))
+        chosen_root = None
+        for cand in candidates:
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        if chosen_root:
+            print("Detected root in ZIP:", chosen_root)
+            for member in names:
+                if member.startswith(chosen_root + '/'):
+                    rel = member[len(chosen_root)+1:]
+                    if rel=='' or rel.endswith('/'):
+                        continue
+                    target = os.path.join(EXTRACT_TO, rel)
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(member) as src, open(target, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+        else:
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+else:
+    print("Extract folder exists:", EXTRACT_TO)
+
+# Verify structure
+for s in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, s)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"Missing folder: {p}")
+print("Dataset ready.")
+
+# 5) Transforms and datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP*1.05)),
+    transforms.CenterCrop(CROP),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir,  transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes, "Num classes:", num_classes)
+
+# 6) Imbalance report (quick)
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    cnt = Counter(labels)
+    arr = np.array([cnt[i] for i in range(num_classes)])
+    total = int(arr.sum()); mean = float(arr.mean()); std = float(arr.std())
+    mn = int(arr.min()); mx = int(arr.max())
+    ir = float(mx/mn) if mn>0 else float('inf')
+    cv = std/mean if mean>0 else float('nan')
+    ps = arr/arr.sum()
+    entropy = -np.sum([p*np.log2(p) for p in ps if p>0])
+    normalized_entropy = entropy / np.log2(len(arr))
+    df = pd.DataFrame({"class_idx":list(range(num_classes)),"class_name":classes,"count":arr})
+    summary = {"total":total,"mean":mean,"std":std,"min":mn,"max":mx,"imbalance_ratio_max_min":ir,"cv":cv,"entropy":entropy,"normalized_entropy":normalized_entropy}
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+valid_df, valid_summary = imbalance_report(valid_set.samples)
+test_df, test_summary = imbalance_report(test_set.samples)
+
+print("\n--- Imbalance (train) ---")
+display(train_df)
+print(train_summary)
+
+# 7) Balancing: class weights & WeightedRandomSampler
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+print("Class weights:", class_weights.cpu().numpy())
+
+sample_weights = [1.0/train_counts[label] for _,label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8) Define Tiny-MobileNetV2-Optimized
+# simplified inverted residual block with optional expansion
+class InvertedResidualLite(nn.Module):
+    def __init__(self, in_c, out_c, stride=1, expand=4):
+        super().__init__()
+        mid = max(1, int(in_c * expand))
+        # pointwise expand
+        if expand > 1:
+            self.expand_pw = nn.Sequential(
+                nn.Conv2d(in_c, mid, 1, bias=False),
+                nn.BatchNorm2d(mid),
+                nn.ReLU(inplace=True)
+            )
+        else:
+            self.expand_pw = nn.Identity()
+        # depthwise
+        self.dw = nn.Sequential(
+            nn.Conv2d(mid, mid, 3, stride=stride, padding=1, groups=mid, bias=False),
+            nn.BatchNorm2d(mid),
+            nn.ReLU(inplace=True)
+        )
+        # project
+        self.project_pw = nn.Sequential(
+            nn.Conv2d(mid, out_c, 1, bias=False),
+            nn.BatchNorm2d(out_c)
+        )
+        self.use_res_connect = (stride==1 and in_c==out_c)
+    def forward(self, x):
+        out = self.expand_pw(x)
+        out = self.dw(out)
+        out = self.project_pw(out)
+        if self.use_res_connect:
+            return x + out
+        return out
+
+class TinyMobileNetV2Opt(nn.Module):
+    def __init__(self, num_classes, alpha=0.3):
+        super().__init__()
+        def ch(x): return max(1, int(x * alpha))
+        # initial conv
+        input_ch = ch(32)
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, input_ch, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(input_ch),
+            nn.ReLU(inplace=True)
+        )
+        # blocks: (in,out,stride,expand)
+        blocks_cfg = [
+            (input_ch, ch(16), 1, 1),
+            (ch(16), ch(24), 2, 4),
+            (ch(24), ch(24), 1, 4),
+            (ch(24), ch(32), 2, 4),
+            (ch(32), ch(32), 1, 4),
+            (ch(32), ch(64), 2, 4),
+            (ch(64), ch(64), 1, 4)
+        ]
+        layers=[]
+        for in_c,out_c,stride,exp in blocks_cfg:
+            layers.append(InvertedResidualLite(in_c,out_c,stride,expand=exp))
+        self.features = nn.Sequential(*layers)
+        # global pooling
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        final_ch = ch(64)
+        # classifier (kept small)
+        self.classifier = nn.Sequential(
+            nn.Linear(final_ch, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.features(x)
+        x = self.pool(x).reshape(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+model = TinyMobileNetV2Opt(num_classes=num_classes, alpha=ALPHA).to(device)
+n_params = sum(p.numel() for p in model.parameters())
+print("Model params:", n_params)
+print(model)
+
+# 9) Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+
+# 10) helpers: evaluate & metrics
+def evaluate(loader):
+    model.eval()
+    ys, preds = [], []
+    losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out,y)
+            losses.append(loss.item()*X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses)/len(loader.dataset)
+    acc = (np.array(ys)==np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1_macro, ys, preds
+
+# 11) training loop with logging
+best_f1 = 0.0; wait = 0
+train_losses=[]; val_losses=[]; train_accs=[]; val_accs=[]
+start = time.time()
+
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss=0.0; running_correct=0; total=0; batch_times=[]
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch}"):
+        t0=time.time()
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+
+        running_loss += loss.item()*X.size(0)
+        running_correct += (out.argmax(1)==y).sum().item()
+        total += X.size(0)
+        batch_times.append(time.time()-t0)
+
+    train_loss = running_loss/total
+    train_acc  = running_correct/total
+    val_loss, val_acc, val_f1, _, _ = evaluate(valid_loader)
+
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    if val_f1 > best_f1 + 1e-4:
+        best_f1 = val_f1
+        wait = 0
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "C2_TinyMobileNetV2opt_best.pth"))
+        print(" -> best saved")
+    else:
+        wait += 1
+
+    if wait >= EARLY_STOPPING:
+        print("Early stop.")
+        break
+
+end = time.time()
+print("Training finished in", round(end-start,1), "s")
+
+# 12) Load best model & test eval
+best_path = os.path.join(MODEL_SAVE_DIR, "C2_TinyMobileNetV2opt_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    print("Loaded best model.")
+else:
+    print("Best model not found; using last model state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(test_loader)
+print("\n=== TEST ===")
+print("Loss:", test_loss, "Acc:", test_acc, "MacroF1:", test_f1)
+
+# 13) Full classification report & confusion matrix
+print("\nClassification Report:\n")
+print(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.title("Confusion Matrix (Test)"); plt.show()
+
+# 14) Save artifacts
+with open(os.path.join(MODEL_SAVE_DIR,"classification_report.txt"),"w") as f:
+    f.write(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+pd.DataFrame({'class':classes,'train_count':train_df['count']}).to_csv(os.path.join(MODEL_SAVE_DIR,"train_counts.csv"), index=False)
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.savefig(os.path.join(MODEL_SAVE_DIR,"confusion_matrix_test.png"), bbox_inches='tight')
+
+# 15) Learning curves
+plt.figure(figsize=(12,5))
+plt.subplot(1,2,1); plt.plot(train_losses, label="train_loss"); plt.plot(val_losses, label="val_loss"); plt.legend(); plt.title("Loss")
+plt.subplot(1,2,2); plt.plot(train_accs, label="train_acc"); plt.plot(val_accs, label="val_acc"); plt.legend(); plt.title("Accuracy")
+plt.show()
+
+# 16) Show some misclassified samples
+def show_misclassified(n=18):
+    bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad:
+        print("No misclassified")
+        return
+    n = min(n, len(bad))
+    picks = bad[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path,true_label = test_set.samples[idx]
+        img = test_set.loader(path)
+        imgs.append(eval_transform(img))
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,8)); plt.imshow(np.transpose(grid.numpy(),(1,2,0))); plt.axis('off'); plt.title("Misclassified"); plt.show()
+    print("\n".join(titles))
+show_misclassified(18)
+
+print("All done. Artifacts saved at:", MODEL_SAVE_DIR)
+9. 1hama_program_2_train_C2.ipynb
+# C2 — Tiny-MobileNetV2-Optimized (full pipeline)
+# Run in Google Colab (recommended). If local, remove drive.mount and adjust paths.
+
+# 0) Installs (uncomment if needed)
+# !pip install -q scikit-learn seaborn tqdm
+
+# 1) Imports
+import os, shutil, time, zipfile, math
+from collections import Counter
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings("ignore")
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
+from sklearn.preprocessing import label_binarize
+
+# 2) Drive mount & paths (Colab)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # <-- update if needed
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_C2_TinyMobileNetV2_opt"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3) Hyperparams & device
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+
+CROP = 64
+BATCH = 32
+NUM_WORKERS = 2
+LR = 1e-3
+MAX_EPOCHS = 80
+EARLY_STOPPING = 8
+ALPHA = 0.3   # width multiplier (smaller -> lighter)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
+# 4) Copy & robust extract (detect root folder if ZIP contains extra top folder)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive to local...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP...")
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        # detect candidate root that contains train/
+        candidates = sorted(set([p.split('/')[0] for p in names if p.strip()!='']))
+        chosen_root = None
+        for cand in candidates:
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        if chosen_root:
+            print("Detected root in ZIP:", chosen_root)
+            for member in names:
+                if member.startswith(chosen_root + '/'):
+                    rel = member[len(chosen_root)+1:]
+                    if rel=='' or rel.endswith('/'):
+                        continue
+                    target = os.path.join(EXTRACT_TO, rel)
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with z.open(member) as src, open(target, 'wb') as dst:
+                        shutil.copyfileobj(src, dst)
+        else:
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+else:
+    print("Extract folder exists:", EXTRACT_TO)
+
+# Verify structure
+for s in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, s)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"Missing folder: {p}")
+print("Dataset ready.")
+
+# 5) Transforms and datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP*1.05)),
+    transforms.CenterCrop(CROP),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir,  transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes, "Num classes:", num_classes)
+
+# 6) Imbalance report (quick)
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    cnt = Counter(labels)
+    arr = np.array([cnt[i] for i in range(num_classes)])
+    total = int(arr.sum()); mean = float(arr.mean()); std = float(arr.std())
+    mn = int(arr.min()); mx = int(arr.max())
+    ir = float(mx/mn) if mn>0 else float('inf')
+    cv = std/mean if mean>0 else float('nan')
+    ps = arr/arr.sum()
+    entropy = -np.sum([p*np.log2(p) for p in ps if p>0])
+    normalized_entropy = entropy / np.log2(len(arr))
+    df = pd.DataFrame({"class_idx":list(range(num_classes)),"class_name":classes,"count":arr})
+    summary = {"total":total,"mean":mean,"std":std,"min":mn,"max":mx,"imbalance_ratio_max_min":ir,"cv":cv,"entropy":entropy,"normalized_entropy":normalized_entropy}
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+valid_df, valid_summary = imbalance_report(valid_set.samples)
+test_df, test_summary = imbalance_report(test_set.samples)
+
+print("\n--- Imbalance (train) ---")
+display(train_df)
+print(train_summary)
+
+# 7) Balancing: class weights & WeightedRandomSampler
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+print("Class weights:", class_weights.cpu().numpy())
+
+sample_weights = [1.0/train_counts[label] for _,label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8) Define Tiny-MobileNetV2-Optimized
+# simplified inverted residual block with optional expansion
+class InvertedResidualLite(nn.Module):
+    def __init__(self, in_c, out_c, stride=1, expand=4):
+        super().__init__()
+        mid = max(1, int(in_c * expand))
+        # pointwise expand
+        if expand > 1:
+            self.expand_pw = nn.Sequential(
+                nn.Conv2d(in_c, mid, 1, bias=False),
+                nn.BatchNorm2d(mid),
+                nn.ReLU(inplace=True)
+            )
+        else:
+            self.expand_pw = nn.Identity()
+        # depthwise
+        self.dw = nn.Sequential(
+            nn.Conv2d(mid, mid, 3, stride=stride, padding=1, groups=mid, bias=False),
+            nn.BatchNorm2d(mid),
+            nn.ReLU(inplace=True)
+        )
+        # project
+        self.project_pw = nn.Sequential(
+            nn.Conv2d(mid, out_c, 1, bias=False),
+            nn.BatchNorm2d(out_c)
+        )
+        self.use_res_connect = (stride==1 and in_c==out_c)
+    def forward(self, x):
+        out = self.expand_pw(x)
+        out = self.dw(out)
+        out = self.project_pw(out)
+        if self.use_res_connect:
+            return x + out
+        return out
+
+class TinyMobileNetV2Opt(nn.Module):
+    def __init__(self, num_classes, alpha=0.3):
+        super().__init__()
+        def ch(x): return max(1, int(x * alpha))
+        # initial conv
+        input_ch = ch(32)
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, input_ch, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(input_ch),
+            nn.ReLU(inplace=True)
+        )
+        # blocks: (in,out,stride,expand)
+        blocks_cfg = [
+            (input_ch, ch(16), 1, 1),
+            (ch(16), ch(24), 2, 4),
+            (ch(24), ch(24), 1, 4),
+            (ch(24), ch(32), 2, 4),
+            (ch(32), ch(32), 1, 4),
+            (ch(32), ch(64), 2, 4),
+            (ch(64), ch(64), 1, 4)
+        ]
+        layers=[]
+        for in_c,out_c,stride,exp in blocks_cfg:
+            layers.append(InvertedResidualLite(in_c,out_c,stride,expand=exp))
+        self.features = nn.Sequential(*layers)
+        # global pooling
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        final_ch = ch(64)
+        # classifier (kept small)
+        self.classifier = nn.Sequential(
+            nn.Linear(final_ch, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.features(x)
+        x = self.pool(x).reshape(x.size(0), -1)
+        x = self.classifier(x)
+        return x
+
+model = TinyMobileNetV2Opt(num_classes=num_classes, alpha=ALPHA).to(device)
+n_params = sum(p.numel() for p in model.parameters())
+print("Model params:", n_params)
+print(model)
+
+# 9) Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)
+
+# 10) helpers: evaluate & metrics
+def evaluate(loader):
+    model.eval()
+    ys, preds = [], []
+    losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            out = model(X)
+            loss = criterion(out,y)
+            losses.append(loss.item()*X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses)/len(loader.dataset)
+    acc = (np.array(ys)==np.array(preds)).mean()
+    f1_macro = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1_macro, ys, preds
+
+# 11) training loop with logging
+best_f1 = 0.0; wait = 0
+train_losses=[]; val_losses=[]; train_accs=[]; val_accs=[]
+start = time.time()
+
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss=0.0; running_correct=0; total=0; batch_times=[]
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch}"):
+        t0=time.time()
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+
+        running_loss += loss.item()*X.size(0)
+        running_correct += (out.argmax(1)==y).sum().item()
+        total += X.size(0)
+        batch_times.append(time.time()-t0)
+
+    train_loss = running_loss/total
+    train_acc  = running_correct/total
+    val_loss, val_acc, val_f1, _, _ = evaluate(valid_loader)
+
+    train_losses.append(train_loss); val_losses.append(val_loss)
+    train_accs.append(train_acc); val_accs.append(val_acc)
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    if val_f1 > best_f1 + 1e-4:
+        best_f1 = val_f1
+        wait = 0
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "C2_TinyMobileNetV2opt_best.pth"))
+        print(" -> best saved")
+    else:
+        wait += 1
+
+    if wait >= EARLY_STOPPING:
+        print("Early stop.")
+        break
+
+end = time.time()
+print("Training finished in", round(end-start,1), "s")
+
+# 12) Load best model & test eval
+best_path = os.path.join(MODEL_SAVE_DIR, "C2_TinyMobileNetV2opt_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=device))
+    print("Loaded best model.")
+else:
+    print("Best model not found; using last model state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(test_loader)
+print("\n=== TEST ===")
+print("Loss:", test_loss, "Acc:", test_acc, "MacroF1:", test_f1)
+
+# 13) Full classification report & confusion matrix
+print("\nClassification Report:\n")
+print(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.title("Confusion Matrix (Test)"); plt.show()
+
+# 14) Save artifacts
+with open(os.path.join(MODEL_SAVE_DIR,"classification_report.txt"),"w") as f:
+    f.write(classification_report(ys_true, ys_pred, target_names=classes, zero_division=0))
+pd.DataFrame({'class':classes,'train_count':train_df['count']}).to_csv(os.path.join(MODEL_SAVE_DIR,"train_counts.csv"), index=False)
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.savefig(os.path.join(MODEL_SAVE_DIR,"confusion_matrix_test.png"), bbox_inches='tight')
+
+# 15) Learning curves
+plt.figure(figsize=(12,5))
+plt.subplot(1,2,1); plt.plot(train_losses, label="train_loss"); plt.plot(val_losses, label="val_loss"); plt.legend(); plt.title("Loss")
+plt.subplot(1,2,2); plt.plot(train_accs, label="train_acc"); plt.plot(val_accs, label="val_acc"); plt.legend(); plt.title("Accuracy")
+plt.show()
+
+# 16) Show some misclassified samples
+def show_misclassified(n=18):
+    bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad:
+        print("No misclassified")
+        return
+    n = min(n, len(bad))
+    picks = bad[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path,true_label = test_set.samples[idx]
+        img = test_set.loader(path)
+        imgs.append(eval_transform(img))
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,8)); plt.imshow(np.transpose(grid.numpy(),(1,2,0))); plt.axis('off'); plt.title("Misclassified"); plt.show()
+    print("\n".join(titles))
+show_misclassified(18)
+
+print("All done. Artifacts saved at:", MODEL_SAVE_DIR)
+10. 1hama_program_2_train_C3.ipynb
+# ================================================================
+# 🟡 C3 — Nano-MobileNetV3 FULL TRAINING PIPELINE
+# ================================================================
+
+# ---- INSTALL ----
+# !pip install -q scikit-learn seaborn tqdm
+
+import os, shutil, time, zipfile
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from collections import Counter
+import warnings
+warnings.filterwarnings("ignore")
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import transforms, datasets, utils
+
+from sklearn.metrics import (
+    classification_report, confusion_matrix, f1_score, roc_auc_score
+)
+from sklearn.preprocessing import label_binarize
+
+# ================================================================
+# 1. MOUNT DRIVE
+# ================================================================
+from google.colab import drive
+drive.mount("/content/drive", force_remount=False)
+
+# ================================================================
+# 2. PATHS
+# ================================================================
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+SAVE_DIR = "/content/drive/MyDrive/hama/models_C3_NanoMobileNetV3"
+
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+# ================================================================
+# 3. CONFIG
+# ================================================================
+CROP = 64
+BATCH = 32
+LR = 1e-3
+WORKERS = 2
+MAX_EPOCH = 80
+EARLY_STOP = 8
+SEED = 42
+
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Device:", device)
+
+# ================================================================
+# 4. COPY ZIP + ROBUST EXTRACT
+# ================================================================
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("ZIP already exists.")
+
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting...")
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        roots = sorted(set([p.split('/')[0] for p in names if p.strip() != ""]))
+
+        root = None
+        for r in roots:
+            if any(name.startswith(r + "/train/") for name in names):
+                root = r
+                break
+
+        for member in names:
+            if member.startswith(root + "/"):
+                rel = member[len(root)+1:]
+                if rel == "":
+                    continue
+                tgt = os.path.join(EXTRACT_TO, rel)
+                os.makedirs(os.path.dirname(tgt), exist_ok=True)
+                if not member.endswith("/"):
+                    with z.open(member) as src, open(tgt, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+else:
+    print("Extract folder already exists.")
+
+# verify
+for s in ["train","valid","test"]:
+    if not os.path.isdir(os.path.join(EXTRACT_TO, s)):
+        raise FileNotFoundError("Missing folder: "+os.path.join(EXTRACT_TO, s))
+
+print("Dataset OK!")
+
+# ================================================================
+# 5. TRANSFORMS & LOADERS
+# ================================================================
+train_tf = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_tf = transforms.Compose([
+    transforms.Resize(int(CROP*1.05)),
+    transforms.CenterCrop(CROP),
+    transforms.ToTensor()
+])
+
+train_set = datasets.ImageFolder(EXTRACT_TO+"/train", transform=train_tf)
+valid_set = datasets.ImageFolder(EXTRACT_TO+"/valid", transform=eval_tf)
+test_set  = datasets.ImageFolder(EXTRACT_TO+"/test",  transform=eval_tf)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes)
+
+# ================================================================
+# 6. BALANCING: WeightedRandomSampler + Loss Weights
+# ================================================================
+counts = Counter([l for _,l in train_set.samples])
+class_counts = [counts[i] for i in range(num_classes)]
+
+class_weights = torch.tensor([1/c for c in class_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(device)
+
+sample_weights = [1/class_counts[label] for _,label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH, sampler=sampler, num_workers=WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH, shuffle=False, num_workers=WORKERS)
+test_loader  = DataLoader(test_set, batch_size=BATCH, shuffle=False, num_workers=WORKERS)
+
+print("Class weights:", class_weights.cpu().numpy())
+
+# ================================================================
+# 7. Nano-MobileNetV3 (VERY SMALL, VERY FAST)
+# ================================================================
+
+def conv_bn(inp, oup, stride):
+    return nn.Sequential(
+        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.ReLU(inplace=True)
+    )
+
+def dw_pw(inp, oup, stride=1):
+    return nn.Sequential(
+        nn.Conv2d(inp, inp, 3, stride, 1, groups=inp, bias=False),
+        nn.BatchNorm2d(inp),
+        nn.ReLU(inplace=True),
+
+        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
+        nn.BatchNorm2d(oup),
+        nn.ReLU(inplace=True),
+    )
+
+class NanoMobileNetV3(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+
+        self.features = nn.Sequential(
+            conv_bn(3, 16, 2),
+            dw_pw(16, 24, 1),
+            dw_pw(24, 32, 2),
+            dw_pw(32, 32, 1),
+            dw_pw(32, 48, 2),
+            dw_pw(48, 64, 1),
+        )
+        sample = torch.zeros(1,3,CROP,CROP)
+        flat = self.features(sample).numel()
+        self.flat = flat
+
+        self.classifier = nn.Sequential(
+            nn.Linear(flat, 128),
+            nn.ReLU(True),
+            nn.Dropout(0.2),
+            nn.Linear(128, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = x.reshape(x.size(0), -1)
+        return self.classifier(x)
+
+model = NanoMobileNetV3(num_classes).to(device)
+print(model)
+print("Params:", sum(p.numel() for p in model.parameters()))
+
+# ================================================================
+# 8. TRAINING SETUP
+# ================================================================
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=3, factor=0.5)
+
+# LOGGING
+train_logs = {"loss":[], "acc":[], "f1":[]}
+valid_logs = {"loss":[], "acc":[], "f1":[]}
+
+# ================================================================
+# 9. EVALUATE FUNCTION
+# ================================================================
+def evaluate(model, loader):
+    model.eval()
+    ys, ps, losses = [], [], []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(device), y.to(device)
+            o = model(X)
+            loss = criterion(o,y)
+            losses.append(loss.item()*X.size(0))
+            ps.extend(o.argmax(1).cpu().numpy())
+            ys.extend(y.cpu().numpy())
+    loss = sum(losses)/len(loader.dataset)
+    acc = (np.array(ys)==np.array(ps)).mean()
+    f1 = f1_score(ys, ps, average="macro", zero_division=0)
+    return loss, acc, f1, ys, ps
+
+# ================================================================
+# 10. TRAINING LOOP + EARLY STOPPING
+# ================================================================
+best = 0; wait = 0
+for epoch in range(1, MAX_EPOCH+1):
+    model.train()
+    run_loss=0; correct=0; total=0
+
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch}"):
+        X,y = X.to(device), y.to(device)
+        out = model(X)
+        loss = criterion(out,y)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        run_loss += loss.item()*X.size(0)
+        correct += (out.argmax(1)==y).sum().item()
+        total += X.size(0)
+
+    tr_loss = run_loss/total
+    tr_acc = correct/total
+
+    val_loss, val_acc, val_f1, _, _ = evaluate(model, valid_loader)
+    scheduler.step(val_f1)
+
+    # log
+    train_logs["loss"].append(tr_loss)
+    train_logs["acc"].append(tr_acc)
+    train_logs["f1"].append(val_f1)
+    valid_logs["loss"].append(val_loss)
+    valid_logs["acc"].append(val_acc)
+    valid_logs["f1"].append(val_f1)
+
+    print(f"Epoch {epoch} | "
+          f"train_loss={tr_loss:.4f} acc={tr_acc:.4f} | "
+          f"val_loss={val_loss:.4f} acc={val_acc:.4f} f1={val_f1:.4f}")
+
+    if val_f1 > best:
+        best = val_f1; wait = 0
+        torch.save(model.state_dict(), SAVE_DIR+"/nanomnv3_best.pth")
+        print(" -> Saved best")
+    else:
+        wait += 1
+
+    if wait >= EARLY_STOP:
+        print("Early stopping!")
+        break
+
+# ================================================================
+# 11. TEST EVALUATION
+# ================================================================
+model.load_state_dict(torch.load(SAVE_DIR+"/nanomnv3_best.pth"))
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate(model, test_loader)
+
+print("\n==== TEST RESULTS ====")
+print("Loss:", test_loss)
+print("Acc :", test_acc)
+print("F1  :", test_f1)
+
+# ================================================================
+# 12. CLASSIFICATION REPORT
+# ================================================================
+rep = classification_report(ys_true, ys_pred, target_names=classes)
+print(rep)
+
+with open(SAVE_DIR+"/classification_report.txt","w") as f:
+    f.write(rep)
+
+# ================================================================
+# 13. CONFUSION MATRIX
+# ================================================================
+cm = confusion_matrix(ys_true, ys_pred)
+plt.figure(figsize=(10,8))
+sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes)
+plt.title("Confusion Matrix – Nano-MobileNetV3")
+plt.show()
+
+# ================================================================
+# 14. LEARNING CURVES
+# ================================================================
+plt.figure(figsize=(12,5))
+plt.subplot(1,2,1)
+plt.plot(train_logs["loss"], label="Train")
+plt.plot(valid_logs["loss"], label="Valid")
+plt.title("Loss Curve"); plt.legend()
+
+plt.subplot(1,2,2)
+plt.plot(train_logs["acc"], label="Train Acc")
+plt.plot(valid_logs["acc"], label="Valid Acc")
+plt.title("Accuracy Curve"); plt.legend()
+plt.show()
+
+# ================================================================
+# 15. MISCLASSIFIED SAMPLES GRID
+# ================================================================
+bad = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+print("Misclassified:", len(bad))
+
+imgs=[]; titles=[]
+for idx in bad[:36]:
+    path,_ = test_set.samples[idx]
+    img = test_set.loader(path)
+    img = eval_tf(img)
+    imgs.append(img)
+    titles.append(f"T:{classes[ys_true[idx]]} | P:{classes[ys_pred[idx]]}")
+
+grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+plt.figure(figsize=(14,10))
+plt.imshow(np.transpose(grid.numpy(), (1,2,0)))
+plt.title("Misclassified Samples")
+plt.axis("off")
+plt.show()
+
+# ================================================================
+# 16. FEATURE MAP VISUALIZATION
+# ================================================================
+def show_feature_maps(model, img_path):
+    model.eval()
+    img = test_set.loader(img_path)
+    img_t = eval_tf(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        for i, layer in enumerate(model.features):
+            img_t = layer(img_t)
+            if len(img_t.shape)==4 and img_t.shape[1] <= 16:
+                fmap = img_t[0].cpu()
+                grid = utils.make_grid(fmap.unsqueeze(1), nrow=8, normalize=True)
+                plt.figure(figsize=(10,6))
+                plt.imshow(grid.permute(1,2,0))
+                plt.title(f"Feature Maps after layer {i}")
+                plt.axis("off")
+                plt.show()
+                break
+
+show_feature_maps(model, test_set.samples[0][0])
+
+# ================================================================
+print("Artifacts saved in:", SAVE_DIR)
+11. 1hama_program_2_train_D1.ipynb
+# D1 - ESPNet (ultra small <50KB) - Full pipeline (Colab-ready)
+# Requirements: torch, torchvision, sklearn, seaborn, tqdm, matplotlib, pandas
+# Run in Colab (recommended). If local, adjust DRIVE paths and skip drive.mount.
+
+# 0. Installs (uncomment if needed)
+# !pip install -q scikit-learn seaborn tqdm
+
+# 1. Imports
+import os, shutil, zipfile, time, math
+from collections import Counter
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+import torch
+from torch import nn, optim
+from torch.utils.data import DataLoader, WeightedRandomSampler
+from torchvision import datasets, transforms, utils
+
+from sklearn.metrics import classification_report, confusion_matrix, f1_score, precision_recall_fscore_support
+from sklearn.preprocessing import label_binarize
+import warnings
+warnings.filterwarnings("ignore")
+
+# 2. Mount Drive + paths (Colab)
+from google.colab import drive
+drive.mount('/content/drive', force_remount=False)
+
+DRIVE_ZIP = "/content/drive/MyDrive/hama/hama1_split.zip"   # <-- change if needed
+LOCAL_ZIP = "/content/hama1_split.zip"
+EXTRACT_TO = "/content/dataset/hama/hama_split"
+MODEL_SAVE_DIR = "/content/drive/MyDrive/hama/models_D1_ESPNet"
+os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+# 3. Config
+SEED = 42
+torch.manual_seed(SEED); np.random.seed(SEED)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+BATCH_SIZE = 32
+CROP = 64
+NUM_WORKERS = 2
+LR = 1e-3
+MAX_EPOCHS = 80
+EARLY_STOPPING = 8
+
+print("Device:", DEVICE)
+
+# 4. Copy ZIP -> local & robust extract (detect root inside zip)
+if not os.path.exists(LOCAL_ZIP):
+    print("Copying ZIP from Drive...")
+    shutil.copyfile(DRIVE_ZIP, LOCAL_ZIP)
+else:
+    print("Local ZIP exists:", LOCAL_ZIP)
+
+# Extract with root detection
+if not os.path.exists(EXTRACT_TO):
+    print("Extracting ZIP to:", EXTRACT_TO)
+    with zipfile.ZipFile(LOCAL_ZIP, 'r') as z:
+        names = z.namelist()
+        # guess candidate root that contains train/
+        candidates = sorted(set([p.split('/')[0] for p in names if p.strip()!='']))
+        chosen_root = None
+        for cand in candidates:
+            if any(name.startswith(cand + '/train/') for name in names):
+                chosen_root = cand
+                break
+        if chosen_root:
+            print("Detected root folder in ZIP:", chosen_root)
+            for member in names:
+                if not member.startswith(chosen_root + '/'):
+                    continue
+                rel = member[len(chosen_root)+1:]
+                if rel == "" or rel.endswith('/'):
+                    continue
+                target = os.path.join(EXTRACT_TO, rel)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with z.open(member) as src, open(target, 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+        else:
+            print("No single root detected; extracting everything under:", EXTRACT_TO)
+            z.extractall(EXTRACT_TO)
+    print("Extract done.")
+else:
+    print("Extract folder already exists:", EXTRACT_TO)
+
+# Validate structure
+for s in ["train", "valid", "test"]:
+    p = os.path.join(EXTRACT_TO, s)
+    if not os.path.isdir(p):
+        raise FileNotFoundError(f"Missing expected folder: {p}. Check ZIP structure.")
+print("Dataset structure OK.")
+
+# 5. Transforms & Datasets
+train_transform = transforms.Compose([
+    transforms.RandomRotation(15),
+    transforms.RandomResizedCrop(CROP, scale=(0.8,1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor()
+])
+eval_transform = transforms.Compose([
+    transforms.Resize(int(CROP*1.05)),
+    transforms.CenterCrop(CROP),
+    transforms.ToTensor()
+])
+
+train_dir = os.path.join(EXTRACT_TO, "train")
+valid_dir = os.path.join(EXTRACT_TO, "valid")
+test_dir  = os.path.join(EXTRACT_TO, "test")
+
+train_set = datasets.ImageFolder(train_dir, transform=train_transform)
+valid_set = datasets.ImageFolder(valid_dir, transform=eval_transform)
+test_set  = datasets.ImageFolder(test_dir, transform=eval_transform)
+
+classes = train_set.classes
+num_classes = len(classes)
+print("Classes:", classes)
+print("Num classes:", num_classes)
+
+# 6. Imbalance report (for printing)
+def imbalance_report(samples):
+    labels = [s[1] for s in samples]
+    counts = Counter(labels)
+    counts_list = [counts.get(i,0) for i in range(num_classes)]
+    arr = np.array(counts_list)
+    total = int(arr.sum())
+    mean = float(arr.mean())
+    std = float(arr.std())
+    mn = int(arr.min())
+    mx = int(arr.max())
+    imbalance_ratio = float(mx / mn) if mn>0 else float('inf')
+    cv = float(std / mean) if mean>0 else float('nan')
+    ps = arr / arr.sum()
+    entropy = -float(np.sum([p*np.log2(p) for p in ps if p>0]))
+    max_entropy = float(np.log2(len(arr)))
+    normalized_entropy = entropy / max_entropy if max_entropy>0 else 0.0
+    df = pd.DataFrame({"class_idx":list(range(num_classes)),"class_name":classes,"count":counts_list})
+    summary = {"total":total,"mean":mean,"std":std,"min":mn,"max":mx,"imbalance_ratio_max_min":imbalance_ratio,"cv":cv,"entropy":entropy,"normalized_entropy":normalized_entropy}
+    return df, summary
+
+train_df, train_summary = imbalance_report(train_set.samples)
+valid_df, valid_summary = imbalance_report(valid_set.samples)
+test_df, test_summary   = imbalance_report(test_set.samples)
+
+print("\n--- Imbalance (Train) ---")
+display(train_df); print(train_summary)
+
+# 7. Balancing decisions: WeightedRandomSampler + class-weights for loss
+train_counts = train_df['count'].tolist()
+class_weights = torch.tensor([1.0/(c if c>0 else 1.0) for c in train_counts], dtype=torch.float)
+class_weights = class_weights / class_weights.sum() * num_classes
+class_weights = class_weights.to(DEVICE)
+print("Class weights for loss:", class_weights.cpu().numpy())
+
+sample_weights = [1.0 / train_counts[label] for _, label in train_set.samples]
+sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+
+train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, sampler=sampler, num_workers=NUM_WORKERS)
+valid_loader = DataLoader(valid_set, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+test_loader  = DataLoader(test_set,  batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS)
+
+# 8. Define ESPNet (Ultra-small) - custom tiny design
+# Design goals:
+# - depthwise separable ops where possible
+# - small channel counts
+# - output flatten small (24*8*8 -> etc)
+# This is tiny; number of params kept very low.
+
+def conv_bn_relu(in_c, out_c, k=3, s=1, p=1):
+    return nn.Sequential(nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p, bias=False),
+                         nn.BatchNorm2d(out_c),
+                         nn.ReLU(inplace=True))
+
+def dw_pw(in_c, out_c, stride=1):
+    # depthwise then pointwise, minimal BN
+    return nn.Sequential(
+        nn.Conv2d(in_c, in_c, 3, stride=stride, padding=1, groups=in_c, bias=False),
+        nn.BatchNorm2d(in_c),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(in_c, out_c, 1, bias=False),
+        nn.BatchNorm2d(out_c),
+        nn.ReLU(inplace=True)
+    )
+
+class ESPBlockTiny(nn.Module):
+    """A tiny ESP-like block: split->dilated convs approximated using small depthwise branches
+       For extreme smallness we keep only a couple of branches and then fuse."""
+    def __init__(self, in_c, out_c):
+        super().__init__()
+        mid = max(1, out_c//2)
+        # reduce
+        self.reduce = nn.Conv2d(in_c, mid, 1, bias=False)
+        # two small depthwise branches (simulate wider receptive fields cheaply)
+        self.dw1 = nn.Conv2d(mid, mid, 3, padding=1, groups=mid, bias=False)
+        self.dw2 = nn.Conv2d(mid, mid, 3, padding=1, groups=mid, bias=False)
+        self.bn = nn.BatchNorm2d(mid*2)
+        self.project = nn.Conv2d(mid*2, out_c, 1, bias=False)
+        self.act = nn.ReLU(inplace=True)
+    def forward(self, x):
+        r = self.reduce(x)
+        a = self.dw1(r)
+        b = self.dw2(r)
+        cat = torch.cat([a,b], dim=1)
+        cat = self.bn(cat)
+        out = self.project(cat)
+        return self.act(out)
+
+class ESPNetUltra(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        # extremely small channel plan
+        # input 3x64x64
+        self.stem = conv_bn_relu(3, 8, k=3, s=2, p=1)   # 64 -> 32
+        self.esp1 = ESPBlockTiny(8, 12)                  # 32 -> 32
+        self.down1 = dw_pw(12, 16, stride=2)             # 32 -> 16
+        self.esp2 = ESPBlockTiny(16, 20)                 # 16 -> 16
+        self.down2 = dw_pw(20, 24, stride=2)             # 16 -> 8
+        self.esp3 = ESPBlockTiny(24, 24)                 # 8 -> 8
+
+        # classifier: make flatten very small
+        # flatten dim = 24 * 8 * 8 = 1536
+        self.pool = nn.AdaptiveAvgPool2d((1,1))  # reduce spatial
+        self.fc_small = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(24, 32),   # tiny bottleneck
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Linear(32, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.esp1(x)
+        x = self.down1(x)
+        x = self.esp2(x)
+        x = self.down2(x)
+        x = self.esp3(x)
+        x = self.pool(x)   # [B,24,1,1]
+        return self.fc_small(x)
+
+# Instantiate
+model = ESPNetUltra(num_classes).to(DEVICE)
+params = sum(p.numel() for p in model.parameters())
+flops_est = None
+print(model)
+print("Params:", params)
+
+# 9. Loss, optimizer, scheduler
+criterion = nn.CrossEntropyLoss(weight=class_weights)
+optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-5)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3)  # no verbose arg
+
+# 10. Attach hook to visualize first activation maps later
+activations = {}
+def get_hook(name):
+    def hook(model, inp, out):
+        activations[name] = out.detach().cpu()
+    return hook
+# register on stem conv output
+model.stem.register_forward_hook(get_hook('stem'))
+
+# 11. Evaluation helper
+def evaluate_model(m, loader):
+    m.eval()
+    ys = []; preds = []; losses = []
+    with torch.no_grad():
+        for X,y in loader:
+            X,y = X.to(DEVICE), y.to(DEVICE)
+            out = m(X)
+            loss = criterion(out, y)
+            losses.append(loss.item() * X.size(0))
+            preds.extend(out.argmax(1).cpu().numpy().tolist())
+            ys.extend(y.cpu().numpy().tolist())
+    avg_loss = sum(losses) / len(loader.dataset)
+    acc = (np.array(ys) == np.array(preds)).mean()
+    f1m = f1_score(ys, preds, average='macro', zero_division=0)
+    return avg_loss, acc, f1m, ys, preds
+
+# 12. Training loop (with logging, early stopping on val macro-F1)
+best_val_f1 = 0.0
+patience = 0
+history = {"train_loss":[], "train_acc":[], "val_loss":[], "val_acc":[], "val_f1":[]}
+
+start_time = time.time()
+for epoch in range(1, MAX_EPOCHS+1):
+    model.train()
+    running_loss = 0.0; running_correct = 0; total = 0
+    batch_times = []
+    for X,y in tqdm(train_loader, desc=f"Epoch {epoch} train"):
+        t0 = time.time()
+        X,y = X.to(DEVICE), y.to(DEVICE)
+        out = model(X)
+        loss = criterion(out, y)
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+        batch_times.append(time.time()-t0)
+
+        running_loss += loss.item() * X.size(0)
+        running_correct += (out.argmax(1) == y).sum().item()
+        total += X.size(0)
+
+    train_loss = running_loss / total
+    train_acc = running_correct / total
+    val_loss, val_acc, val_f1, _, _ = evaluate_model(model, valid_loader)
+
+    history["train_loss"].append(train_loss)
+    history["train_acc"].append(train_acc)
+    history["val_loss"].append(val_loss)
+    history["val_acc"].append(val_acc)
+    history["val_f1"].append(val_f1)
+
+    print(f"Epoch {epoch:02d} | train_loss {train_loss:.4f} acc {train_acc:.4f} | val_loss {val_loss:.4f} acc {val_acc:.4f} f1 {val_f1:.4f} | avg_batch_s {np.mean(batch_times):.3f}")
+
+    scheduler.step(val_f1)
+
+    # save best
+    if val_f1 > best_val_f1 + 1e-4:
+        best_val_f1 = val_f1
+        torch.save(model.state_dict(), os.path.join(MODEL_SAVE_DIR, "ESPNetUltra_best.pth"))
+        print("  -> New best saved (val_f1 improved).")
+        patience = 0
+    else:
+        patience += 1
+
+    if patience >= EARLY_STOPPING:
+        print("Early stopping triggered.")
+        break
+
+end_time = time.time()
+print("Training finished in", round(end_time-start_time,1), "s")
+print("Best val F1:", best_val_f1)
+
+# 13. Load best & evaluate on test
+best_path = os.path.join(MODEL_SAVE_DIR, "ESPNetUltra_best.pth")
+if os.path.exists(best_path):
+    model.load_state_dict(torch.load(best_path, map_location=DEVICE))
+    print("Loaded best model from", best_path)
+else:
+    print("Best model not found - using last state.")
+
+test_loss, test_acc, test_f1, ys_true, ys_pred = evaluate_model(model, test_loader)
+print(f"\n=== TEST METRICS ===\nLoss: {test_loss:.4f} | Acc: {test_acc:.4f} | Macro F1: {test_f1:.4f}")
+
+# 14. Full classification report & confusion matrix
+report = classification_report(ys_true, ys_pred, target_names=classes, zero_division=0)
+print("\nClassification Report:\n")
+print(report)
+cm = confusion_matrix(ys_true, ys_pred, labels=list(range(num_classes)))
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.xlabel("Pred"); plt.ylabel("True"); plt.title("Confusion Matrix (Test)"); plt.show()
+
+# 15. Learning curves
+plt.figure(figsize=(12,5))
+plt.subplot(1,2,1); plt.plot(history['train_loss'], label='train_loss'); plt.plot(history['val_loss'], label='val_loss'); plt.legend(); plt.title("Loss")
+plt.subplot(1,2,2); plt.plot(history['train_acc'], label='train_acc'); plt.plot(history['val_acc'], label='val_acc'); plt.legend(); plt.title("Accuracy")
+plt.show()
+
+# 16. Misclassified examples grid (up to 24)
+def show_misclassified(n=18):
+    bad_idx = [i for i,(t,p) in enumerate(zip(ys_true, ys_pred)) if t!=p]
+    if not bad_idx:
+        print("No misclassified.")
+        return
+    picks = bad_idx[:n]
+    imgs=[]; titles=[]
+    for idx in picks:
+        path, true_label = test_set.samples[idx]
+        pil = test_set.loader(path)
+        img = eval_transform(pil)
+        imgs.append(img)
+        titles.append(f"T:{classes[true_label]} P:{classes[ys_pred[idx]]}")
+    grid = utils.make_grid(imgs, nrow=6, normalize=True, scale_each=True)
+    plt.figure(figsize=(12,8)); plt.imshow(np.transpose(grid.numpy(), (1,2,0))); plt.axis('off'); plt.title("Misclassified samples")
+    for t in titles[:n]:
+        print(t)
+show_misclassified(18)
+
+# 17. Feature map preview (stem)
+def visualize_activations(sample_idx=0, n_maps=8):
+    model.eval()
+    path, label = test_set.samples[sample_idx]
+    pil = test_set.loader(path)
+    inp = eval_transform(pil).unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        _ = model(inp)
+    if 'stem' in activations:
+        acts = activations['stem'].squeeze(0)  # [C,H,W]
+        n_maps = min(n_maps, acts.shape[0])
+        fig, axes = plt.subplots(1, n_maps, figsize=(n_maps*2,2))
+        for i in range(n_maps):
+            axes[i].imshow(acts[i].numpy(), cmap='viridis'); axes[i].axis('off')
+        plt.suptitle(f"Stem feature maps for sample {sample_idx} (label={classes[label]})")
+        plt.show()
+    else:
+        print("No activation captured.")
+visualize_activations(0, n_maps=8)
+
+# 18. Save artifacts (model already saved). Save report + cm image + training history
+with open(os.path.join(MODEL_SAVE_DIR, "classification_report.txt"), "w") as f:
+    f.write(report)
+pd.DataFrame({'class':classes, 'train_count': train_df['count']}).to_csv(os.path.join(MODEL_SAVE_DIR, "train_class_counts.csv"), index=False)
+plt.figure(figsize=(10,8)); sns.heatmap(cm, annot=True, fmt="d", xticklabels=classes, yticklabels=classes, cmap="Blues"); plt.savefig(os.path.join(MODEL_SAVE_DIR, "confusion_matrix_test.png"))
+pd.DataFrame(history).to_csv(os.path.join(MODEL_SAVE_DIR, "training_history.csv"), index=False)
+print("Artifacts saved to:", MODEL_SAVE_DIR)
+
+# 19. (Optional) Quick param/size estimate and INT8 post-training quantization suggestion
+print("Param count:", params)
+# rough float32 size
+print("Float32 size estimate: {:.1f} KB".format(params*4/1024))
+print("If you quantize to INT8 and prune channels, binary size can go below ~50KB target depending on TFLite conversion + pruning.")

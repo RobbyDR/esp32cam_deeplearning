@@ -1,0 +1,53 @@
+buatkan program training untuk Model: 
+
+F1 ShuffleNet-Tiny
+
+Model ini akan di inference di ESP32S3, jadi optimalkan.
+
+dataset ada di google drive. extensi *.raw, ukuran 96x96, grayscale.
+ada imbalance untuk dataset (Class-weighted loss ATAU Weighted sampler )
+
+link dataset: /content/drive/MyDrive/batch3/hama1baru.zip
+
+Split the Unified Dataset Properly 
+
+• Train: 70% 
+• Validation: 15% 
+• Test: 15%
+Splitting must be class-wise, not random across folders
+
+metrik evaluasi:
+a. model.summary()
+b. jumlah parameter
+c.	Test Metric: Loss, Acc, Test Macro F1
+d.	Classification Report
+e.	Model size (KB)
+f.	Latency inference (ms)
+g.	Peak RAM usage (KB)
+h. dll yang relevan
+i. semua hasil evaluasi disimpan pada file txt dengan link
+/content/drive/MyDrive/batch3/{model}/evaluatin.txt
+
+lakukan juga
+Convert to TFLite Micro ,
+
+
+3. Visualizations 
+• Confusion matrix 
+• Sample predictions 
+• Learning curves (loss/accuracy) 
+• Misclassified examples (recommended) 
+
+gambar2 ini di save juga
+/content/drive/MyDrive/batch3/{model}/
+
+model disimpan di google drive juga
+a.	Size .h5
+b.	Size .tflite micro
+c.	Size .tflite micro INT8
+d.	Latency FP32 vs INT8
+
+/content/drive/MyDrive/batch3/{model}/
+
+Ini adalah program IPYNB existing:
+

@@ -1,0 +1,297 @@
+A0 - Classic CNN (4 conv layers + FC)
+TEST -> loss 0.3918 acc 0.8957 macroF1 0.8983
+
+=== Classification Report ===
+
+              precision    recall  f1-score   support
+
+           0       0.94      0.92      0.93        92
+           1       0.91      0.86      0.89        72
+          10       0.94      0.93      0.94        72
+          11       0.92      0.93      0.93        87
+           2       0.81      0.84      0.82        50
+           3       0.87      0.86      0.87       113
+           4       0.86      0.96      0.90        69
+           5       0.92      0.98      0.95       120
+           6       0.91      0.95      0.93        44
+           7       0.89      0.86      0.87       167
+           8       0.92      0.82      0.87       180
+           9       0.83      0.93      0.88       104
+
+    accuracy                           0.90      1170
+   macro avg       0.89      0.90      0.90      1170
+weighted avg       0.90      0.90      0.90      1170
+
+
+A. VERY TINY MODELS (PALING RINGAN UNTUK ESP32)
+🟢 A1 – TinyESP32CNN (baseline)
+Input: 64×64 RGB
+3 depthwise blocks
+FC: 2048 → 64 → num_classes
+Output: Softmax
+Estimasi:
+Ukuran model: ~130 KB (INT8)
+Inference time: ~50–80 ms di ESP32-S3
+Akurasi dataset hama: 80–88%
+
+=== TEST RESULTS ===
+Loss: 1.7066 | Acc: 0.4120 | Macro F1: 0.4067
+
+Classification report (table):
+precision	recall	f1-score	support
+0	0.550000	0.597826	0.572917	92.000000
+1	0.353383	0.652778	0.458537	72.000000
+10	0.301775	0.708333	0.423237	72.000000
+11	0.396226	0.241379	0.300000	87.000000
+2	0.213836	0.680000	0.325359	50.000000
+3	0.500000	0.398230	0.443350	113.000000
+4	0.454545	0.797101	0.578947	69.000000
+5	0.710526	0.450000	0.551020	120.000000
+6	0.258065	0.727273	0.380952	44.000000
+7	0.500000	0.023952	0.045714	167.000000
+8	0.710145	0.272222	0.393574	180.000000
+9	0.514706	0.336538	0.406977	104.000000
+accuracy	0.411966	0.411966	0.411966	0.411966
+macro avg	0.455267	0.490469	0.406715	1170.000000
+weighted avg	0.506215	0.411966	0.386579	1170.000000
+
+
+🟢 A2 – TinyESP32CNN (Depthwise ALL, lebih kecil)
+Perubahan:
+Channel lebih kecil: 3 → 6 → 12 → 24
+FC lebih kecil: 24×8×8 → 32 → class
+Estimasi:
+Ukuran model: ~70 KB
+Inference time: ~35–55 ms
+Akurasi: 75–85%
+➡ Cocok kalau prioritas adalah kecepatan real-time.
+
+=== TEST RESULTS ===
+Loss 2.0720 Acc 0.2521 MacroF1 0.2399
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.36      0.24      0.29        92
+           1       0.31      0.56      0.40        72
+          10       0.22      0.68      0.33        72
+          11       0.21      0.18      0.20        87
+           2       0.18      0.70      0.29        50
+           3       0.32      0.10      0.15       113
+           4       0.29      0.70      0.41        69
+           5       0.56      0.16      0.25       120
+           6       0.15      0.68      0.24        44
+           7       0.00      0.00      0.00       167
+           8       0.00      0.00      0.00       180
+           9       0.56      0.24      0.34       104
+
+    accuracy                           0.25      1170
+   macro avg       0.26      0.35      0.24      1170
+weighted avg       0.24      0.25      0.20      1170
+
+🟢 A3 – TinyESP32CNN (Input Grayscale)
+Perubahan:
+Dataset tetap sama
+Transform ditambah transforms.Grayscale()
+Conv input 1 → 8 → 16 → 32
+Estimasi:
+Ukuran model: ~80 KB
+Inference time: ~40–60 ms
+Akurasi: 76–89% bisa lebih baik karena grayscale sering lebih stabil
+➡ Cocok untuk ESP32 yang ingin mengurangi bandwidth kamera OV2640.
+TEST:
+Loss: 1.7475924901473217
+Acc : 0.4042735042735043
+F1  : 0.4034139983151888
+
+Classification Report:
+              precision    recall  f1-score   support
+
+           0       0.43      0.62      0.51        92
+           1       0.34      0.67      0.45        72
+          10       0.38      0.61      0.47        72
+          11       0.40      0.51      0.45        87
+           2       0.25      0.68      0.36        50
+           3       0.66      0.37      0.47       113
+           4       0.44      0.81      0.57        69
+           5       0.55      0.39      0.46       120
+           6       0.32      0.86      0.47        44
+           7       0.17      0.02      0.03       167
+           8       0.76      0.12      0.21       180
+           9       0.41      0.37      0.39       104
+
+    accuracy                           0.40      1170
+   macro avg       0.43      0.50      0.40      1170
+weighted avg       0.45      0.40      0.36      1170
+
+🟧 B. MID-SIZE MODELS (AKURASI LEBIH TINGGI)
+🟠 B1 – TinyMobileNetV1 (0.25x width multiplier)
+Model ini:
+Mirip MobileNet asli tapi jauh diperkecil
+Depthwise convolution full
+Kecil, cepat, akurat
+Estimasi:
+Ukuran model: 200–260 KB (INT8)
+Inference time: 90–130 ms
+Akurasi: 88–93%
+➡ Ini sweet spot antara akurasi & performa.
+==== TEST RESULTS ====
+Test Loss: 0.762417409562657
+Test Acc: 0.747008547008547
+Test F1: 0.7548770599995901
+              precision    recall  f1-score   support
+
+           0       0.79      0.88      0.84        92
+           1       0.82      0.89      0.85        72
+          10       0.68      0.93      0.78        72
+          11       0.70      0.85      0.77        87
+           2       0.51      0.84      0.64        50
+           3       0.77      0.73      0.75       113
+           4       0.74      0.94      0.83        69
+           5       0.82      0.78      0.80       120
+           6       0.66      0.91      0.76        44
+           7       0.81      0.50      0.61       167
+           8       0.87      0.54      0.67       180
+           9       0.71      0.81      0.76       104
+
+    accuracy                           0.75      1170
+   macro avg       0.74      0.80      0.75      1170
+weighted avg       0.77      0.75      0.74      1170
+
+
+🟠 B2 (0.35x)
+==== TEST RESULTS ====
+Test Loss: 0.6612585796759679
+Test Acc: 0.7794871794871795
+Test F1: 0.7948540982564977
+              precision    recall  f1-score   support
+
+           0       0.88      0.89      0.89        92
+           1       0.81      0.92      0.86        72
+          10       0.82      0.93      0.87        72
+          11       0.67      0.85      0.75        87
+           2       0.60      0.80      0.68        50
+           3       0.72      0.81      0.76       113
+           4       0.88      0.94      0.91        69
+           5       0.80      0.88      0.84       120
+           6       0.82      0.91      0.86        44
+           7       0.77      0.52      0.62       167
+           8       0.82      0.61      0.70       180
+           9       0.79      0.81      0.80       104
+
+    accuracy                           0.78      1170
+   macro avg       0.78      0.82      0.79      1170
+weighted avg       0.78      0.78      0.77      1170
+
+🟨 C. LARGE MODELS – TETAP KOMPATIBEL, TAPI LEBIH BERAT
+(Butuh ESP32-S3 dengan PSRAM aktif)
+🟡 C1 – Mini-MobileNetV2
+Better accuracy daripada V1.
+Estimasi:
+Ukuran model: 300–450 KB
+Inference time: 120–200 ms
+Akurasi: 90–95%
+➡ Cocok jika akurasi tertinggi menjadi prioritas.
+=== TEST RESULT ===
+Loss: 0.8312087528725974
+Acc : 0.7367521367521368
+F1  : 0.7404347992700099
+
+=== CLASSIFICATION REPORT ===
+              precision    recall  f1-score   support
+
+           0       0.82      0.84      0.83        92
+           1       0.65      0.85      0.73        72
+          10       0.82      0.86      0.84        72
+          11       0.68      0.82      0.74        87
+           2       0.52      0.76      0.62        50
+           3       0.82      0.79      0.80       113
+           4       0.77      0.91      0.83        69
+           5       0.81      0.79      0.80       120
+           6       0.52      0.93      0.67        44
+           7       0.80      0.51      0.63       167
+           8       0.79      0.58      0.67       180
+           9       0.74      0.72      0.73       104
+
+    accuracy                           0.74      1170
+   macro avg       0.73      0.78      0.74      1170
+weighted avg       0.76      0.74      0.73      1170
+
+🟡 C2 – Tiny-MobileNetV2-Optimized (full pipeline)
+Versi disederhanakan, masih akurat, tapi lebih ringan.
+=== TEST ===
+Loss: 1.425248220639351 Acc: 0.5188034188034188 MacroF1: 0.521684607966104
+
+Classification Report:
+
+              precision    recall  f1-score   support
+
+           0       0.69      0.76      0.72        92
+           1       0.41      0.76      0.53        72
+          10       0.44      0.82      0.57        72
+          11       0.43      0.62      0.51        87
+           2       0.34      0.82      0.48        50
+           3       0.68      0.43      0.53       113
+           4       0.52      0.77      0.62        69
+           5       0.70      0.59      0.64       120
+           6       0.37      0.91      0.53        44
+           7       0.72      0.17      0.27       167
+           8       0.74      0.26      0.38       180
+           9       0.59      0.39      0.47       104
+
+    accuracy                           0.52      1170
+   macro avg       0.55      0.61      0.52      1170
+weighted avg       0.60      0.52      0.50      1170
+
+🟡 C3 – Nano-MobileNetV3
+==== TEST RESULTS ====
+Loss: 0.6122348283600604
+Acc : 0.8051282051282052
+F1  : 0.8113685304321154
+              precision    recall  f1-score   support
+
+           0       0.86      0.90      0.88        92
+           1       0.75      0.89      0.82        72
+          10       0.82      0.89      0.85        72
+          11       0.78      0.87      0.83        87
+           2       0.62      0.82      0.71        50
+           3       0.79      0.81      0.80       113
+           4       0.81      0.94      0.87        69
+           5       0.92      0.95      0.93       120
+           6       0.73      0.91      0.81        44
+           7       0.76      0.63      0.69       167
+           8       0.86      0.62      0.72       180
+           9       0.83      0.83      0.83       104
+
+    accuracy                           0.81      1170
+   macro avg       0.79      0.84      0.81      1170
+weighted avg       0.81      0.81      0.80      1170
+
+💠 D1 – ESPNet (ultra small <50KB)
+=== TEST METRICS ===
+Loss: 2.0089 | Acc: 0.2863 | Macro F1: 0.2669
+
+Classification Report:
+
+              precision    recall  f1-score   support
+
+           0       0.37      0.60      0.45        92
+           1       0.30      0.61      0.40        72
+          10       0.22      0.35      0.27        72
+          11       0.11      0.07      0.08        87
+           2       0.23      0.82      0.35        50
+           3       0.40      0.23      0.29       113
+           4       0.40      0.88      0.55        69
+           5       0.42      0.23      0.29       120
+           6       0.17      0.77      0.28        44
+           7       0.00      0.00      0.00       167
+           8       0.00      0.00      0.00       180
+           9       0.42      0.15      0.23       104
+
+    accuracy                           0.29      1170
+   macro avg       0.25      0.39      0.27      1170
+weighted avg       0.23      0.29      0.22      1170
+
+💠 E1 – Vision Transformer Tiny 64×64
+✔ E2 – Swin Transformer Tiny
+✔ E3 – DeiT-Tiny

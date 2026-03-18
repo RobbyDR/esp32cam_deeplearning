@@ -1,0 +1,52 @@
+mosi 38
+clk 39
+miso 40
+
+capture_auto robby_20260218 5000 5
+
+(unrelevan) https://www.kaggle.com/datasets/rtlmhjbn/ip02-dataset?select=test.txt
+
+pin display
+
+| ST7789 | ESP32-S3                                      |
+| ------ | --------------------------------------------- |
+| GND    | GND                                           |
+| VCC    | 3.3V                                          |
+| SCL    | GPIO21                                        |
+| SDA    | *GPIO41                                         |
+| RES    | GPIO14                                        |
+| DC     | *GPIO42                                         |
+| BLK    | * 3.3V |
+
+hindari pin
+GPIO0
+GPIO1
+GPIO3
+GPIO19/20 (USB native pada beberapa board)
+
+#define PIN_SD_CLK 39
+#define PIN_SD_CMD 38
+#define PIN_SD_D0 40
+
+c.pin_d0 = 11;
+    c.pin_d1 = 9;
+    c.pin_d2 = 8;
+    c.pin_d3 = 10;
+    c.pin_d4 = 12;
+    c.pin_d5 = 18;
+    c.pin_d6 = 17;
+    c.pin_d7 = 16;
+
+    c.pin_xclk = 15;
+    c.pin_pclk = 13;
+    c.pin_vsync = 6;
+    c.pin_href = 7;
+    c.pin_sccb_sda = 4;
+    c.pin_sccb_scl = 5;
+PSRAM
+35,36,37
+
+===================================================
+preview
+preview_stop
+

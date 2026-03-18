@@ -1,0 +1,249 @@
+masih error
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+Before init
+Guru Meditation Error: Core  1 panic'ed (StoreProhibited). Exception was unhandled.
+
+Core  1 register dump:
+PC      : 0x42001f6e  PS      : 0x00060830  A0      : 0x8200203c  A1      : 0x3fcebec0
+A2      : 0x00000010  A3      : 0x00000000  A4      : 0x00000000  A5      : 0x00000029  
+A6      : 0x000000ff  A7      : 0x00000000  A8      : 0x08000000  A9      : 0x3fcebe90
+A10     : 0x3fc97274  A11     : 0x00000001  A12     : 0xffffffff  A13     : 0x00004000  
+A14     : 0x00000000  A15     : 0x3fc94238  SAR     : 0x00000010  EXCCAUSE: 0x0000001d
+EXCVADDR: 0x00000010  LBEG    : 0x420171ec  LEND    : 0x42017250  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x42001f6b:0x3fcebec0 0x42002039:0x3fcebef0 0x42001a93:0x3fcebf10 0x42004a02:0x3fcebf40
+
+
+
+
+ELF file SHA256: 7f058a41741ff69e
+
+Rebooting...
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)
+Saved PC:0x42026212
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+Before init
+Guru Meditation Error: Core  1 panic'ed (StoreProhibited). Exception was unhandled.
+
+Core  1 register dump:
+PC      : 0x42001f6e  PS      : 0x00060830  A0      : 0x8200203c  A1      : 0x3fcebec0  
+A2      : 0x00000010  A3      : 0x00000000  A4      : 0x00000000  A5      : 0x00000029
+A6      : 0x000000ff  A7      : 0x00000000  A8      : 0x08000000  A9      : 0x3fcebe90  
+A10     : 0x3fc97274  A11     : 0x00000001  A12     : 0xffffffff  A13     : 0x00004000
+A14     : 0x00000000  A15     : 0x3fc94238  SAR     : 0x00000010  EXCCAUSE: 0x0000001d  
+EXCVADDR: 0x00000010  LBEG    : 0x420171ec  LEND    : 0x42017250  LCOUNT  : 0x00000000
+
+
+Backtrace: 0x42001f6b:0x3fcebec0 0x42002039:0x3fcebef0 0x42001a93:0x3fcebf10 0x42004a02:0x3fcebf40
+
+
+
+
+ELF file SHA256: 7f058a41741ff69e
+
+Rebooting...
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)
+Saved PC:0x42026212
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+Before init
+Guru Meditation Error: Core  1 panic'ed (StoreProhibited). Exception was unhandled.
+
+Core  1 register dump:
+PC      : 0x42001f6e  PS      : 0x00060830  A0      : 0x8200203c  A1      : 0x3fcebec0  
+A2      : 0x00000010  A3      : 0x00000000  A4      : 0x00000000  A5      : 0x00000029  
+A6      : 0x000000ff  A7      : 0x00000000  A8      : 0x08000000  A9      : 0x3fcebe90
+A10     : 0x3fc97274  A11     : 0x00000001  A12     : 0xffffffff  A13     : 0x00004000  
+A14     : 0x00000000  A15     : 0x3fc94238  SAR     : 0x00000010  EXCCAUSE: 0x0000001d
+EXCVADDR: 0x00000010  LBEG    : 0x420171ec  LEND    : 0x42017250  LCOUNT  : 0x00000000  
+
+
+Backtrace: 0x42001f6b:0x3fcebec0 0x42002039:0x3fcebef0 0x42001a93:0x3fcebf10 0x42004a02:0x3fcebf40
+
+
+
+
+ELF file SHA256: 7f058a41741ff69e
+
+Rebooting...
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0xc (RTC_SW_CPU_RST),boot:0x2a (SPI_FAST_FLASH_BOOT)
+Saved PC:0x42026212
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3808,len:0x4bc
+load:0x403c9700,len:0xbd8
+load:0x403cc700,len:0x2a0c
+entry 0x403c98d0
+Before init
+Guru Meditation Error: Core  1 panic'ed (StoreProhibited). Exception was unhandled.
+
+Core  1 register dump:
+PC      : 0x42001f6e  PS      : 0x00060830  A0      : 0x8200203c  A1      : 0x3fcebec0  
+A2      : 0x00000010  A3      : 0x00000000  A4      : 0x00000000  A5      : 0x00000029
+A6      : 0x000000ff  A7      : 0x00000000  A8      : 0x08000000  A9      : 0x3fcebe90  
+A10     : 0x3fc97274  A11     : 0x00000001  A12     : 0xffffffff  A13     : 0x00004000
+A14     : 0x00000000  A15     : 0x3fc94238  SAR     : 0x00000010  EXCCAUSE: 0x0000001d  
+EXCVADDR: 0x00000010  LBEG    : 0x420171ec  LEND    : 0x42017250  LCOUNT  : 0x00000000
+
+
+Backtrace: 0x42001f6b:0x3fcebec0 0x42002039:0x3fcebef0 0x42001a93:0x3fcebf10 0x42004a02:0x3fcebf40
+
+
+
+
+ELF file SHA256: 7f058a41741ff69e
+
+Rebooting...
+
+tolong review ini
+
+platformio.ini
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[env:esp32s3cam]
+platform = espressif32
+board = esp32-s3-devkitc-1
+framework = arduino
+monitor_speed = 115200
+upload_speed = 115200
+build_flags =
+    -DBOARD_HAS_PSRAM
+    -mfix-esp32-psram-cache-issue
+    -DCONFIG_SPIRAM_SUPPORT=1
+    -DCONFIG_SPIRAM_USE_MALLOC
+    -DCONFIG_SPIRAM_USE_CAPS_ALLOC
+    -DCONFIG_SPIRAM_SIZE=8388608
+    -D USER_SETUP_LOADED
+    -I include
+	-D USER_SETUP_INCLUDE="User_Setup.h"
+	-D USER_SETUP_LOADED=1
+    -D ST7789_DRIVER=1
+    -D TFT_WIDTH=240
+    -D TFT_HEIGHT=240
+    -D TFT_MOSI=41
+    -D TFT_SCLK=21
+    -D TFT_DC=42
+    -D TFT_RST=14
+    -D SPI_FREQUENCY=27000000
+board_build.arduino.memory_type = qio_opi
+lib_deps = bodmer/TFT_eSPI@^2.5.43
+
+
+main.cpp
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+
+TFT_eSPI tft = TFT_eSPI();
+
+void drawTestPattern()
+{
+    tft.fillScreen(TFT_BLACK);
+
+    // Border
+    tft.drawRect(0, 0, 240, 240, TFT_WHITE);
+
+    // Garis silang
+    tft.drawLine(0, 0, 239, 239, TFT_RED);
+    tft.drawLine(239, 0, 0, 239, TFT_GREEN);
+
+    // Lingkaran tengah
+    tft.drawCircle(120, 120, 60, TFT_BLUE);
+
+    // Teks tengah
+    tft.setTextColor(TFT_YELLOW);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("ESP32-S3", 120, 100);
+    tft.drawString("ST7789 OK", 120, 130);
+}
+
+void colorBars()
+{
+    tft.fillRect(0, 0, 40, 240, TFT_RED);
+    tft.fillRect(40, 0, 40, 240, TFT_GREEN);
+    tft.fillRect(80, 0, 40, 240, TFT_BLUE);
+    tft.fillRect(120, 0, 40, 240, TFT_YELLOW);
+    tft.fillRect(160, 0, 40, 240, TFT_CYAN);
+    tft.fillRect(200, 0, 40, 240, TFT_MAGENTA);
+}
+
+void setup()
+{
+    Serial.begin(115200);
+
+    Serial.println("Before init");
+    tft.init();
+    Serial.println("After init");
+    tft.setRotation(0);
+    tft.fillScreen(TFT_BLACK);
+
+    Serial.println("ST7789 Demo Start");
+
+    drawTestPattern();
+    delay(3000);
+
+    colorBars();
+    delay(3000);
+
+    tft.fillScreen(TFT_BLACK);
+}
+
+void loop()
+{
+    static uint16_t color = 0;
+    static int x = 0;
+
+    tft.fillScreen(color);
+
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Running...", 120, 120);
+
+    color += 1000;
+    x++;
+
+    delay(1000);
+}
+
+
+include/User_Setup.h
+#define USER_SETUP_LOADED
+
+#define ST7789_DRIVER
+
+#define TFT_WIDTH 240
+#define TFT_HEIGHT 240
+
+#define TFT_MOSI 41
+#define TFT_SCLK 21
+#define TFT_DC 42
+#define TFT_RST 14
+
+#define SPI_FREQUENCY 27000000

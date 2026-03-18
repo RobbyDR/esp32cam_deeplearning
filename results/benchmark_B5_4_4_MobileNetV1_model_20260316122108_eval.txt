@@ -1,0 +1,50 @@
+
+===== BENCHMARK EVALUATION =====
+
+===== SYSTEM RELIABILITY =====
+Total Test        : 8
+Successful        : 8
+Timeout (RTO)     : 0
+Parse Error       : 0
+ESP Restart       : 0
+Crash Count       : 0
+Watchdog Reset    : 0
+Success Rate      : 100.00%
+
+===== PERFORMANCE =====
+Avg Latency (ms)  : 3647.50
+Min Latency (ms)  : 3647
+Max Latency (ms)  : 3648
+Latency Std Dev   : 0.50
+FPS               : 0.27
+Peak Free RAM     : 0
+
+===== LATENCY ANALYSIS =====
+Avg Latency      : 3647.50 ms
+Median Latency   : 3647.50 ms
+Std Latency      : 0.53 ms
+P95 Latency      : 3648.00 ms
+
+===== MODEL ACCURACY =====
+Evaluated Samples : 8
+Correct           : 5
+Accuracy          : 62.50%
+
+===== CONFUSION MATRIX =====
+[[1 0 0 1]
+ [0 2 1 0]
+ [0 0 1 0]
+ [0 1 0 1]]
+
+===== CLASSIFICATION REPORT =====
+              precision    recall  f1-score   support
+
+           3       1.00      0.50      0.67         2
+           5       0.67      0.67      0.67         3
+           8       0.50      1.00      0.67         1
+           9       0.50      0.50      0.50         2
+
+    accuracy                           0.62         8
+   macro avg       0.67      0.67      0.62         8
+weighted avg       0.69      0.62      0.62         8
+

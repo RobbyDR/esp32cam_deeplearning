@@ -1,0 +1,87 @@
+ANALISA SD Card
+
+Percobaan 1
+#define SD_SCK 14
+#define SD_MISO 47
+#define SD_MOSI 21
+#define SD_CS 42
+void init_sd()
+{
+    sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+    if (!SD.begin(SD_CS, sdSPI))
+    {
+        Serial.println("SD Mount Failed");
+        while (true)
+            ;
+    }
+
+    Serial.println("SD Mounted OK");
+}
+
+Hasil
+[  1241][E][sd_diskio.cpp:199] sdCommand(): Card Failed! cmd: 0x00
+[  1247][E][sd_diskio.cpp:806] sdcard_mount(): f_mount failed: (3) The physical drive cannot work
+[  1556][E][sd_diskio.cpp:199] sdCommand(): Card Failed! cmd: 0x00
+
+Percobaan 2
+#include "SD_MMC.h"
+void init_sd()
+{
+    if (!SD_MMC.begin())
+    {
+        Serial.println("SD_MMC Mount Failed");
+        return;
+    }
+
+    Serial.println("SD_MMC Mounted OK");
+}
+
+void setup(){
+init_sd();
+    File file = SD_MMC.open("/test.txt", FILE_WRITE);
+    uint8_t cardType = SD_MMC.cardType();
+    Serial.print("Card type: ");
+    Serial.println(cardType);
+    Serial.println(ESP.getPsramSize());
+
+}
+
+Hasil
+[   940][E][SD_MMC.cpp:109] begin(): SDMMCFS: some SD pins are not set
+SD_MMC Mount Failed
+[   947][E][vfs_api.cpp:24] open(): File system is not mounted
+Card type: 0
+8385799
+
+Percobaan 3
+#define SD_SCK 14
+#define SD_MISO 47
+#define SD_MOSI 21
+#define SD_CS 42
+
+#include <SD.h>
+#include <SPI.h>
+
+void init_sd()
+{
+    SPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+
+    if (!SD.begin(SD_CS))
+    {
+        Serial.println("SD SPI Mount Failed");
+        return;
+    }
+
+    Serial.println("SD SPI Mounted OK");
+
+    uint8_t cardType = SD.cardType();
+    Serial.print("Card type: ");
+    Serial.println(cardType);
+}
+
+Hasil
+[  1241][E][sd_diskio.cpp:199] sdCommand(): Card Failed! cmd: 0x00
+[  1247][E][sd_diskio.cpp:806] sdcard_mount(): f_mount failed: (3) The physical drive cannot work
+SD SPI Mount Failed
+

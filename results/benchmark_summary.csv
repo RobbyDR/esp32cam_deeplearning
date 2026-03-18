@@ -1,0 +1,2 @@
+no,model,samples,success,rto,crash,success_rate,accuracy,avg_latency_ms,p95_latency_ms,fps,tensor_arena,peak_free_ram,timestamp
+1,B5_7_1_SqueezeNetTiny_model,100,100,0,0,100.0,25.0,1117.3,1118.0,0.8950147677436678,180000,0,2026-03-16 20:10:53
