@@ -1,0 +1,14 @@
+
+===== BENCHMARK EVALUATION =====
+
+===== SYSTEM RELIABILITY =====
+Total Test        : 0
+Successful        : 0
+Timeout (RTO)     : 0
+Parse Error       : 0
+ESP Restart       : 0
+Crash Count       : 0
+Watchdog Reset    : 0
+Success Rate      : 0.00%
+
+No successful inference to evaluate

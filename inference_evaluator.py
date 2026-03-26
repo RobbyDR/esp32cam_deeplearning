@@ -6,8 +6,8 @@ import random
 import csv
 from datetime import datetime
 import pandas as pd
-from sklearn.metrics import confusion_matrix, classification_report
-
+from sklearn.metrics import f1_score, confusion_matrix, classification_report
+import winsound
 # =============================
 # CONFIG
 # =============================
@@ -130,23 +130,28 @@ def handshake():
     return None
 
 
-MODEL = handshake()
+while True:
 
-if MODEL is None:
+    MODEL = handshake()
+
+    if MODEL is not None:
+        break
 
     print("\nESP32 not responding")
-
     print("1. Retry handshake")
     print("2. Continue benchmark anyway")
 
-    choice = input("Choose (1/2): ")
+    choice = input("Choose (1/2): ").strip()
 
     if choice == "1":
-        MODEL = handshake()
+        continue
 
     elif choice == "2":
         MODEL = "UNKNOWN_MODEL"
+        break
 
+    else:
+        print("Input tidak valid")
 # while not connected:
 
 #     print("\nESP32 not responding")
@@ -247,10 +252,13 @@ def send_image(img):
 # BENCHMARK LOOP
 # =============================
 
-peak_ram = 0
+peak_ram = None
 latencies = []
 crash_count = 0
 wdt_count = 0
+avg_time_per_iter = None
+eta_finish = datetime.now()
+start_benchmark = time.time()
 
 try:
 
@@ -297,6 +305,7 @@ try:
                 print(
                         f"ITER:{i} | "
                         f"STATUS:{status} | "
+                        f"ETA:{eta_finish.strftime('%H:%M:%S') if avg_time_per_iter else 'calculating'} | "
                         f"TS:{iter_timestamp}"
                     )
                 break
@@ -319,8 +328,10 @@ try:
                         latencies.append(latency_mcu)
 
                     if ram is not None:
-                        # peak_ram = min(peak_ram, ram) if peak_ram else ram
-                        peak_ram = min(peak_ram, ram)
+                        if peak_ram is None:
+                            peak_ram = ram
+                        else:
+                            peak_ram = min(peak_ram, ram)
                     
                     print(
                         f"ITER:{i} | "
@@ -330,6 +341,7 @@ try:
                         f"RAM:{ram} | "
                         f"ARENA:{arena} | "
                         f"STATUS:{status} | "
+                        f"ETA:{eta_finish.strftime('%H:%M:%S') if avg_time_per_iter else 'calculating'} | "
                         f"TS:{iter_timestamp}"
                     )
 
@@ -346,6 +358,7 @@ try:
                 print(
                         f"ITER:{i} | "
                         f"STATUS:{status} | "
+                        f"ETA:{eta_finish.strftime('%H:%M:%S') if avg_time_per_iter else 'calculating'} | "
                         f"TS:{iter_timestamp}"
                     )
                 break
@@ -356,6 +369,7 @@ try:
                 print(
                         f"ITER:{i} | "
                         f"STATUS:{status} | "
+                        f"ETA:{eta_finish.strftime('%H:%M:%S') if avg_time_per_iter else 'calculating'} | "
                         f"TS:{iter_timestamp}"
                     )
                 break
@@ -365,6 +379,7 @@ try:
             print(
                 f"ITER:{i} | "
                 f"STATUS:{status} | "
+                f"ETA:{eta_finish.strftime('%H:%M:%S') if avg_time_per_iter else 'calculating'} | "
                 f"TS:{iter_timestamp}"
             )
 
@@ -396,6 +411,16 @@ try:
 
             iter_timestamp
         ])
+
+        elapsed = time.time() - start_benchmark
+
+        if i > 5:
+            avg_time_per_iter = elapsed / (i + 1)
+
+        if avg_time_per_iter is not None:
+            remaining_iter = NUM_TEST - (i + 1)
+            eta_seconds = remaining_iter * avg_time_per_iter
+            eta_finish = datetime.fromtimestamp(time.time() + eta_seconds)
 
         time.sleep(PERIOD)
 
@@ -467,6 +492,36 @@ if len(latencies) > 0:
 
     log_eval(f"Peak Free RAM     : {peak_ram}")
 
+# =============================
+# BEEP
+# =============================
+
+
+DOT = 100      # durasi titik (ms)
+DASH = 300     # durasi garis (ms)
+FREQ = 1000    # frekuensi bunyi (Hz)
+
+def dot():
+    winsound.Beep(FREQ, DOT)
+    time.sleep(0.1)
+
+def dash():
+    winsound.Beep(FREQ, DASH)
+    time.sleep(0.1)
+
+def sos():
+    # S: ...
+    dot(); dot(); dot()
+    time.sleep(0.3)
+
+    # O: ---
+    dash(); dash(); dash()
+    time.sleep(0.3)
+
+    # S: ...
+    dot(); dot(); dot()
+
+# sos()
 
 # =============================
 # MODEL ACCURACY
@@ -491,6 +546,9 @@ if len(df_ok) > 0:
 
     y_true = df_ok["gt_label"].astype(int)
     y_pred = df_ok["pred_label"].astype(int)
+
+    f1_macro = f1_score(y_true, y_pred, average='macro')
+    f1_weighted = f1_score(y_true, y_pred, average='weighted')
 
     correct = (y_true == y_pred).sum()
     total_ok = len(df_ok)
@@ -535,6 +593,20 @@ else:
 
 eval_file.close()
 
+sos()
+sos()
+
+NOTES = input("Berikan NOTES: ").strip()
+
+arena_ok = df_ok["tensor_arena"].dropna()
+
+# arena_final = int(arena_ok.iloc[-1]) if len(arena_ok) > 0 else None
+
+total_duration = time.time() - start_benchmark
+avg_iter_time = total_duration / total if total > 0 else None
+
+
+
 # =============================
 # SUMMARY REPORT (PER MODEL)
 # =============================
@@ -553,14 +625,23 @@ summary_data = {
     "success_rate": success_rate,
 
     "accuracy": accuracy if len(df_ok) > 0 else None,
+    "f1_macro": f1_macro if len(df_ok) > 0 else None,
+    "f1_weighted": f1_weighted if len(df_ok) > 0 else None,
 
+    "min_latency_ms": min_latency if len(latencies) > 0 else None,
+    "max_latency_ms": max_latency if len(latencies) > 0 else None,
     "avg_latency_ms": avg_latency if len(latencies) > 0 else None,
     "p95_latency_ms": latency_ok.quantile(0.95) if len(df_ok) > 0 else None,
 
     "fps": fps if len(latencies) > 0 else None,
 
-    "tensor_arena": arena,
+    "tensor_arena": int(arena_ok.max()) if len(arena_ok) > 0 else None,
     "peak_free_ram": peak_ram,
+
+    "total_duration_sec": total_duration,
+    "avg_time_per_iter_sec": avg_iter_time,
+
+    "notes": NOTES,
 
     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -594,3 +675,6 @@ else:
     df_summary.to_csv(summary_file, index=False)
 
     print("Summary berhasil ditambahkan")
+
+
+
